@@ -1,63 +1,77 @@
+from datetime import datetime
 from database import get_connection
 
+# --- CREATE PAYMENT INTENT ---
+def create_payment_intent(user_id: int, amount: float) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
 
-cur.execute(
-"""
-INSERT INTO payment_intents (provider, user_id, amount, status, created_at, updated_at)
-VALUES ('nuvei', %s, %s, 'pending', NOW(), NOW())
-RETURNING id;
-""",
-(user_id, amount),
-)
+    cursor.execute(
+        """
+        INSERT INTO payment_intents (user_id, amount, status, created_at)
+        VALUES (?, ?, 'pending', ?)
+        """,
+        (user_id, amount, datetime.now()),
+    )
 
+    intent_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
 
-intent_id = cur.fetchone()["id"]
-conn.commit()
-conn.close()
-return intent_id
-
-
-
-
-def update_intent_link(intent_id: int, provider_intent_id: str, link_url: str):
-conn = get_connection()
-cur = conn.cursor()
+    return intent_id
 
 
-cur.execute(
-"""
-UPDATE payment_intents
-SET provider_intent_id=%s, link_url=%s, updated_at=NOW()
-WHERE id=%s
-""",
-(provider_intent_id, link_url, intent_id),
-)
+# --- GET PAYMENT INTENT ---
+def get_payment_intent(intent_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, user_id, amount, status, created_at, transaction_id, authorization_code, status_detail FROM payment_intents WHERE id = ?",
+        (intent_id,),
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return {
+            "id": row[0],
+            "user_id": row[1],
+            "amount": row[2],
+            "status": row[3],
+            "created_at": row[4],
+            "transaction_id": row[5],
+            "authorization_code": row[6],
+            "status_detail": row[7],
+        }
+
+    return None
 
 
-conn.commit()
-conn.close()
+# --- UPDATE PAYMENT INTENT ---
+def update_payment_intent(intent_id: int, **fields):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    set_clause = ", ".join(f"{key} = ?" for key in fields.keys())
+    values = list(fields.values()) + [intent_id]
+
+    cursor.execute(
+        f"UPDATE payment_intents SET {set_clause} WHERE id = ?", values
+    )
+
+    conn.commit()
+    conn.close()
 
 
-
-
+# --- MARK AS PAID ---
 def mark_intent_paid(intent_id: int, provider_tx_id: str, status_detail: int, authorization_code: str):
-conn = get_connection()
-cur = conn.cursor()
-
-
-cur.execute(
-"""
-UPDATE payment_intents
-SET status='paid',
-provider_tx_id=%s,
-status_detail=%s,
-authorization_code=%s,
-updated_at=NOW()
-WHERE id=%s
-""",
-(provider_tx_id, status_detail, authorization_code, intent_id),
-)
-
-
-conn.commit()
-conn.close()
+    update_payment_intent(
+        intent_id,
+        status="paid",
+        transaction_id=provider_tx_id,
+        status_detail=status_detail,
+        authorization_code=authorization_code,
+        paid_at=datetime.now(),
+    )
