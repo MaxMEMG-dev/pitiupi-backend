@@ -4,14 +4,14 @@ from database import init_db
 
 app = FastAPI(
     title="Pitiupi Backend",
-    version="1.0",
-    description="Backend para manejo de pagos Nuvei LinkToPay"
+    description="Backend con integración Nuvei LinkToPay",
+    version="1.0.0"
 )
 
-# Inicializar la base de datos
+# Inicializar base de datos
 init_db()
 
-# Registrar rutas del webhook
+# Rutas del webhook
 app.include_router(nuvei_router)
 
 
