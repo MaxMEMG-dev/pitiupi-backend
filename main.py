@@ -1,4 +1,5 @@
 # main.py
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,28 +10,34 @@ from database import init_db
 app = FastAPI(
     title="Pitiupi Backend",
     description="Backend con integración Nuvei LinkToPay",
-    version="1.0.0"
+    version="1.0.0",
 )
 
-# ======================================
-# Habilitar CORS para permitir OPTIONS
-# ======================================
+# ----------------------------
+# CORS – PERMITE OPTIONS
+# ----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # puedes restringir si quieres más adelante
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],            # ← necesario para aceptar OPTIONS
-    allow_headers=["*"],            # ← necesario para JSON
+    allow_methods=["*"],   # <- permite OPTIONS
+    allow_headers=["*"],
 )
 
+# ----------------------------
 # Inicializar base de datos
+# ----------------------------
 init_db()
 
-# Routers
+# ----------------------------
+# Registrar los routers
+# ----------------------------
 app.include_router(nuvei_router)
 app.include_router(payments_router)
 
-
+# ----------------------------
+# Endpoint raíz
+# ----------------------------
 @app.get("/")
 def home():
     return {
