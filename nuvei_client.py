@@ -1,4 +1,5 @@
 import base64
+import hmac
 import hashlib
 import time
 import requests
@@ -8,41 +9,38 @@ import os
 
 logger = logging.getLogger(__name__)
 
+
 class NuveiClient:
     def __init__(self, app_code: str, app_key: str, environment: str = "stg"):
-        # Validar credenciales de forma más robusta
-        self.app_code = app_code or os.getenv("NUVEI_APP_CODE_SERVER")
-        self.app_key = app_key or os.getenv("NUVEI_APP_KEY_SERVER")
-        self.environment = environment or os.getenv("NUVEI_ENV", "stg")
-        
-        # Si aún son None, usar valores por defecto (fallback)
-        if not self.app_code:
-            logger.error("❌ NUVEI_APP_CODE_SERVER no configurada")
-            self.app_code = "CREDENCIAL_NO_CONFIGURADA"
-            
-        if not self.app_key:
-            logger.error("❌ NUVEI_APP_KEY_SERVER no configurada") 
-            self.app_key = "CREDENCIAL_NO_CONFIGURADA"
+        self.app_code = app_code
+        self.app_key = app_key
+        self.environment = environment
 
-        if self.environment == "stg":
-            self.base_url = "https://noccapi-stg.paymentez.com"
-        else:
+        if environment == "prod":
             self.base_url = "https://noccapi.paymentez.com"
+        else:
+            self.base_url = "https://noccapi-stg.paymentez.com"
 
-        logger.info(f"🔧 NuveiClient inicializado en {self.environment}")
-        logger.info(f"📝 App Code: {self.app_code[:8]}...")
-        logger.info(f"🔑 App Key: {self.app_key[:8]}...")
+        logger.info(f"🌐 NuveiClient iniciado en {environment}")
+        logger.info(f"🔑 Base URL: {self.base_url}")
 
     def generate_auth_token(self) -> str:
-        try:
-            timestamp = str(int(time.time()))
-            uniq_str = self.app_key + timestamp
-            uniq_hash = hashlib.sha256(uniq_str.encode()).hexdigest()
-            raw = f"{self.app_code};{timestamp};{uniq_hash}"
-            return base64.b64encode(raw.encode()).decode()
-        except Exception as e:
-            logger.error(f"❌ Error generando auth token: {e}")
-            raise
+        """
+        PRODUCCIÓN Ecuador → Firma HMAC-SHA512(app_key como key, message=app_code+nonce+app_key)
+        """
+        nonce = str(int(time.time()))
+        message = f"{self.app_code}{nonce}{self.app_key}"
+        auth_hash = hmac.new(
+            key=self.app_key.encode(),
+            msg=message.encode(),
+            digestmod=hashlib.sha512
+        ).hexdigest()
+
+        token = f"{self.app_code};{nonce};{auth_hash}"
+        auth_token_b64 = base64.b64encode(token.encode()).decode()
+
+        logger.info(f"🔐 Auth-Token generado")
+        return auth_token_b64
 
     def create_linktopay(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}/linktopay/init_order/"
@@ -57,41 +55,17 @@ class NuveiClient:
             logger.info(f"➡ Payload: {order_data}")
 
             resp = requests.post(url, json=order_data, headers=headers, timeout=30)
-            
+
+            # Intentamos parsear JSON
             try:
                 data = resp.json()
-            except Exception:
-                logger.error(f"❌ Nuvei respondió NO-JSON ({resp.status_code}): {resp.text}")
-                return {"success": False, "detail": "Nuvei respondió HTML o formato inválido"}
+            except:
+                logger.error(f"❌ Nuvei devolvió HTML o no-JSON ({resp.status_code}): {resp.text}")
+                return {"success": False, "detail": "Respuesta no JSON de Nuvei", "raw": resp.text}
 
-            logger.info(f"🔄 Respuesta Nuvei JSON: {data}")
+            logger.info(f"🔄 Respuesta JSON Nuvei: {data}")
             return data
 
         except Exception as e:
-            logger.error(f"❌ Error HTTP Nuvei: {e}", exc_info=True)
+            logger.error(f"❌ Error Nuvei: {e}", exc_info=True)
             return {"success": False, "detail": str(e)}
-
-
-    def verify_transaction(self, order_id: str) -> Dict[str, Any]:
-        url = f"{self.base_url}/linktopay/check_order/"
-
-        try:
-            auth_token = self.generate_auth_token()
-        except Exception as e:
-            logger.error(f"❌ Error con credenciales Nuvei: {e}")
-            return {"status": "error", "message": "Credenciales inválidas"}
-
-        headers = {
-            "Content-Type": "application/json", 
-            "Auth-Token": auth_token,
-        }
-
-        body = {"order_id": order_id}
-
-        try:
-            logger.info(f"🔍 Verificando order: {order_id}")
-            response = requests.post(url, json=body, headers=headers, timeout=30)
-            return response.json()
-        except Exception as e:
-            logger.error(f"❌ Error verificando: {e}")
-            return {"status": "error", "message": str(e)}
