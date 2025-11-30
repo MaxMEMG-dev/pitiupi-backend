@@ -9,17 +9,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Inicializar base de datos
 init_db()
 
-# Registrar routers
+# Registrar rutas
 app.include_router(nuvei_router)
 app.include_router(payments_router)
 
-
 @app.get("/")
 def home():
-    return {
-        "status": "running",
-        "message": "Pitiupi Backend listo"
-    }
+    return {"status": "running", "message": "Pitiupi Backend listo"}
