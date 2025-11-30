@@ -44,3 +44,13 @@ def home():
         "status": "running",
         "message": "Pitiupi Backend listo"
     }
+
+@app.get("/debug/nvuei")
+def debug_nuvei():
+    import os
+    return {
+        "NUVEI_APP_CODE_SERVER": os.getenv("NUVEI_APP_CODE_SERVER"),
+        "NUVEI_APP_KEY_SERVER": os.getenv("NUVEI_APP_KEY_SERVER"),
+        "NUVEI_ENV": os.getenv("NUVEI_ENV"),
+    }
+
