@@ -27,10 +27,10 @@ def create_payment(data: PaymentRequest):
         # 1. Crear intent interno
         intent_id = create_payment_intent(data.user_id, data.amount)
 
-        # 2. Crear cliente Nuvei
+        # 2. Cliente Nuvei
         nuvei = NuveiClient(APP_CODE, APP_KEY, ENVIRONMENT)
 
-        # 3. Crear orden
+        # 3. Crear orden para Nuvei
         order = {
             "order": {
                 "currency": "USD",
@@ -39,26 +39,29 @@ def create_payment(data: PaymentRequest):
                 "dev_reference": str(intent_id)
             },
             "user": {
-                "id": str(data.user_id)  # Telegram ID
+                "id": str(data.user_id)
             },
             "configuration": {
                 "partial_payment": False
             }
         }
 
+        # 4. Llamar a Nuvei
         nuvei_response = nuvei.create_linktopay(order)
 
-        # Validación de respuesta Nuvei
-        if "response" not in nuvei_response or "status" not in nuvei_response:
-            raise HTTPException(status_code=500, detail="Error en Nuvei (respuesta inválida)")
+        # 5. Validación REAL de Nuvei
+        if not nuvei_response.get("success", False):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Nuvei rechazó la creación del pago: {nuvei_response}"
+            )
 
-        if nuvei_response["response"]["status"] != "success":
-            raise HTTPException(status_code=500, detail="Nuvei rechazó la creación del pago")
+        data_block = nuvei_response["data"]
 
-        order_id = nuvei_response["payment"]["order_id"]
-        redirect_url = nuvei_response["payment"]["payment_url"]
+        order_id = data_block["order"]["id"]
+        redirect_url = data_block["payment"]["payment_url"]
 
-        # 4. Guardar order_id en DB
+        # 6. Guardar order_id en DB
         update_payment_intent(intent_id, order_id=order_id)
 
         return {
