@@ -27,8 +27,9 @@ def get_payment_intent(intent_id: int):
 
     cursor.execute(
         """
-        SELECT id, user_id, amount, status, created_at, transaction_id,
-               authorization_code, status_detail
+        SELECT id, user_id, amount, status, created_at, 
+               transaction_id, authorization_code, status_detail, 
+               paid_at, order_id
         FROM payment_intents
         WHERE id = %s
         """,
@@ -66,4 +67,5 @@ def mark_intent_paid(intent_id: int, provider_tx_id: str, status_detail: int, au
         authorization_code=authorization_code,
         paid_at=datetime.now()
     )
+
 
