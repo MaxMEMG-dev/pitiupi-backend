@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+import os
 
 from payments_core import (
     create_payment_intent,
@@ -7,7 +8,6 @@ from payments_core import (
     get_payment_intent
 )
 from nuvei_client import NuveiClient
-import os
 
 router = APIRouter()
 
@@ -18,8 +18,9 @@ ENV = os.getenv("NUVEI_ENV", "stg")
 
 client = NuveiClient(APP_CODE, APP_KEY, environment=ENV)
 
+
 class PaymentCreateRequest(BaseModel):
-    user_id: int
+    telegram_id: int
     amount: float
 
 
@@ -27,18 +28,18 @@ class PaymentCreateRequest(BaseModel):
 def create_payment(req: PaymentCreateRequest):
     """Crea un intent interno y genera LinkToPay de Nuvei."""
     try:
-        # Crear intent interno
+        # 1) Crear intent interno sin order_id
         intent_id = create_payment_intent(
-            user_id=req.user_id,
+            user_id=req.telegram_id,
             amount=req.amount
         )
 
-        # Generar orden LinkToPay
+        # 2) Enviar a Nuvei
         order_data = {
             "user": {
-                "id": str(req.user_id),
-                "email": f"user{req.user_id}@pitiupi.com",
-                "name": f"Pitiupi User {req.user_id}",
+                "id": str(req.telegram_id),
+                "email": f"user{req.telegram_id}@pitiupi.com",
+                "name": f"Pitiupi User {req.telegram_id}",
                 "last_name": "Bot"
             },
             "order": {
@@ -62,14 +63,14 @@ def create_payment(req: PaymentCreateRequest):
 
         nuvei_resp = client.create_linktopay(order_data)
 
-        # Obtener el order_id real de Nuvei
+        # 3) Leer respuesta Nuvei
         order_id = nuvei_resp.get("data", {}).get("order", {}).get("id")
         payment_url = nuvei_resp.get("data", {}).get("payment", {}).get("payment_url")
 
         if not order_id or not payment_url:
-            raise HTTPException(status_code=500, detail="Error creando pago en Nuvei")
+            raise HTTPException(status_code=500, detail="Nuvei no devolvió order_id o payment_url")
 
-        # Guardar order_id en DB
+        # 4) Guardar order_id en DB
         update_payment_intent(intent_id, order_id=order_id)
 
         return {
@@ -79,8 +80,8 @@ def create_payment(req: PaymentCreateRequest):
         }
 
     except Exception as e:
-        print("ERROR /create_payment:", str(e))
-        raise HTTPException(status_code=500, detail="Error creando pago")
+        print("ERROR /create_payment:", e)
+        raise HTTPException(status_code=500, detail="Error creando pago en Nuvei")
 
 
 @router.get("/check_payment/{intent_id}")
@@ -92,19 +93,20 @@ def check_payment(intent_id: int):
 
     order_id = intent["order_id"]
     if not order_id:
-        raise HTTPException(status_code=400, detail="Orden sin order_id asignado")
+        raise HTTPException(status_code=400, detail="Intent sin order_id asignado")
 
-    # Consulta en Nuvei
+    # 1) Consultar en Nuvei
     nuvei_status = client.verify_transaction(order_id)
 
-    status = nuvei_status.get("transaction", {}).get("status")
-    detail = nuvei_status.get("transaction", {}).get("status_detail")
-    tx_id = nuvei_status.get("transaction", {}).get("id")
-    auth_code = nuvei_status.get("transaction", {}).get("authorization_code")
+    transaction = nuvei_status.get("transaction", {})
+    status = transaction.get("status")
+    detail = transaction.get("status_detail")
+    tx_id = transaction.get("id")
+    auth_code = transaction.get("authorization_code")
 
     if status == "success" and detail == 3:
         from payments_core import mark_intent_paid
         mark_intent_paid(intent_id, tx_id, detail, auth_code)
-        return {"status": "paid", "tx_id": tx_id}
+        return {"paid": True}
 
-    return {"status": "pending"}
+    return {"paid": False}
