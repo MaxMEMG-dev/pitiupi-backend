@@ -1,51 +1,59 @@
-import time
 import base64
 import hashlib
+import time
 import requests
-from settings import (
-NUVEI_APP_CODE_SERVER,
-NUVEI_APP_KEY_SERVER,
-NUVEI_BASE_URL,
-)
+import logging
+from typing import Dict, Any
 
-
-
+logger = logging.getLogger(__name__)
 
 class NuveiClient:
-"""Cliente real de Nuvei LinkToPay"""
+    def __init__(self, app_code: str, app_key: str, environment: str = "stg"):
+        self.app_code = app_code
+        self.app_key = app_key
+        self.environment = environment
 
+        if environment == "stg":
+            self.base_url = "https://noccapi-stg.paymentez.com"
+        else:
+            self.base_url = "https://noccapi.paymentez.com"
 
-def __init__(self):
-self.base_url = NUVEI_BASE_URL
+    def generate_auth_token(self) -> str:
+        timestamp = str(int(time.time()))
+        uniq_str = self.app_key + timestamp
+        uniq_hash = hashlib.sha256(uniq_str.encode()).hexdigest()
+        raw = f"{self.app_code};{timestamp};{uniq_hash}"
+        return base64.b64encode(raw.encode()).decode()
 
+    def create_linktopay(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        url = f"{self.base_url}/linktopay/init_order/"
 
-def generate_auth_token(self) -> str:
-ts = str(int(time.time()))
-uniq = NUVEI_APP_KEY_SERVER + ts
-hashed = hashlib.sha256(uniq.encode()).hexdigest()
-raw = f"{NUVEI_APP_CODE_SERVER};{ts};{hashed}"
-return base64.b64encode(raw.encode()).decode()
+        headers = {
+            "Content-Type": "application/json",
+            "Auth-Token": self.generate_auth_token(),
+        }
 
+        try:
+            logger.info("Creando LinkToPay en Nuvei STAGING...")
+            response = requests.post(url, json=order_data, headers=headers, timeout=30)
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error creando LinkToPay: {e}")
+            raise
 
-def create_linktopay(self, payload: dict) -> dict:
-url = f"{self.base_url}/linktopay/init_order/"
+    def verify_transaction(self, order_id: str) -> Dict[str, Any]:
+        url = f"{self.base_url}/linktopay/check_order/"
 
+        headers = {
+            "Content-Type": "application/json",
+            "Auth-Token": self.generate_auth_token(),
+        }
 
-headers = {
-"Content-Type": "application/json",
-"Auth-Token": self.generate_auth_token(),
-}
+        body = {"order_id": order_id}
 
-
-response = requests.post(url, json=payload, headers=headers, timeout=30)
-try:
-data = response.json()
-except Exception:
-raise Exception(f"Invalid response from Nuvei: {response.text}")
-
-
-if not data.get("success", False):
-raise Exception(f"Nuvei Error: {data.get('detail')}")
-
-
-return data
+        try:
+            response = requests.post(url, json=body, headers=headers, timeout=30)
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error verificando transacción: {e}")
+            raise
