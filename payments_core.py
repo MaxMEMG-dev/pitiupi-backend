@@ -9,6 +9,7 @@ def create_payment_intent(user_id: int, amount: float) -> int:
         """
         INSERT INTO payment_intents (user_id, amount, status, created_at)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (user_id, amount, "pending", datetime.now())
     )
@@ -65,3 +66,4 @@ def mark_intent_paid(intent_id: int, provider_tx_id: str, status_detail: int, au
         authorization_code=authorization_code,
         paid_at=datetime.now()
     )
+
