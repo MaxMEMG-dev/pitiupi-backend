@@ -34,11 +34,24 @@ class NuveiClient:
         }
 
         try:
-            logger.info("Creando LinkToPay en Nuvei STAGING...")
+            logger.info(f"Creando LinkToPay en Nuvei {self.environment}...")
+            logger.info(f"URL: {url}")
+            logger.info(f"Order data: {order_data}")
+            
             response = requests.post(url, json=order_data, headers=headers, timeout=30)
-            return response.json()
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.info(f"Respuesta Nuvei: {result}")
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error HTTP creando LinkToPay: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Respuesta error: {e.response.text}")
+            raise
         except Exception as e:
-            logger.error(f"Error creando LinkToPay: {e}")
+            logger.error(f"Error inesperado creando LinkToPay: {e}")
             raise
 
     def verify_transaction(self, order_id: str) -> Dict[str, Any]:
@@ -52,8 +65,10 @@ class NuveiClient:
         body = {"order_id": order_id}
 
         try:
+            logger.info(f"Verificando transacción para order {order_id}")
             response = requests.post(url, json=body, headers=headers, timeout=30)
+            response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.error(f"Error verificando transacción: {e}")
+            logger.error(f"Error verificando transacción {order_id}: {e}")
             raise
