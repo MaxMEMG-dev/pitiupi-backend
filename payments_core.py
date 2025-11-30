@@ -7,14 +7,14 @@ def create_payment_intent(user_id: int, amount: float) -> int:
 
     cursor.execute(
         """
-        INSERT INTO payment_intents (user_id, amount, status, created_at)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO payment_intents (user_id, amount)
+        VALUES (%s, %s)
         RETURNING id
         """,
-        (user_id, amount, "pending", datetime.now())
+        (user_id, amount)
     )
 
-    intent_id = cursor.fetchone()[0]
+    intent_id = cursor.fetchone()["id"]
     conn.commit()
     conn.close()
 
@@ -67,5 +67,6 @@ def mark_intent_paid(intent_id: int, provider_tx_id: str, status_detail: int, au
         authorization_code=authorization_code,
         paid_at=datetime.now()
     )
+
 
 
