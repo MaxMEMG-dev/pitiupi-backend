@@ -45,91 +45,88 @@ def debug_env():
 def create_payment(req: PaymentCreateRequest):
     """Crea un intent interno y genera LinkToPay de Nuvei."""
     try:
-        # Verificar si las credenciales están configuradas
         if not APP_CODE or not APP_KEY:
-            logger.error("❌ Credenciales Nuvei no configuradas")
             raise HTTPException(
-                status_code=500, 
-                detail="Configuración incompleta. Contacta al administrador."
+                status_code=500,
+                detail="Credenciales Nuvei no configuradas"
             )
 
         logger.info(f"💰 Creando pago para user {req.telegram_id}, amount {req.amount}")
 
-        # 1) Crear intent interno
+        # Crear intent interno
         intent_id = create_payment_intent(
             user_id=req.telegram_id,
             amount=req.amount
         )
 
-        logger.info(f"📝 Intent creado: {intent_id}")
-
-        # 2) Preparar datos para Nuvei
-        amount_str = f"{req.amount:.2f}"
+        amount = float(req.amount)
 
         order_data = {
             "user": {
                 "id": str(req.telegram_id),
-                "email": f"user{req.telegram_id}@pitiupi.com", 
-                "first_name": "User",
-                "last_name": str(req.telegram_id),
-                "phone": "123456789"
+                "email": f"user{req.telegram_id}@pitiupi.com",
+                "name": "User",
+                "last_name": str(req.telegram_id)
             },
             "order": {
                 "dev_reference": str(intent_id),
                 "description": "Recarga Pitiupi",
-                "amount": amount_str,
+                "amount": amount,
                 "currency": "USD",
                 "installments_type": 0,
+                "vat": 0,
+                "taxable_amount": amount,
+                "tax_percentage": 0
             },
             "configuration": {
                 "partial_payment": False,
                 "expiration_time": 900,
-                "allowed_payment_methods": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                "allowed_payment_methods": ["All"],
                 "success_url": "https://pitiupi.com/success",
-                "failure_url": "https://pitiupi.com/failure", 
+                "failure_url": "https://pitiupi.com/failure",
                 "pending_url": "https://pitiupi.com/pending",
                 "review_url": "https://pitiupi.com/review"
             }
         }
 
-        logger.info(f"📤 Enviando a Nuvei...")
+        logger.info(f"📤 Enviando a Nuvei con: {order_data}")
+
+        # Llamar a Nuvei
         nuvei_resp = client.create_linktopay(order_data)
-        
-        # 3) Validar respuesta
-        if nuvei_resp.get("status") == "error":
-            error_msg = nuvei_resp.get("message", "Error desconocido")
-            logger.error(f"❌ Error Nuvei: {error_msg}")
-            raise HTTPException(status_code=500, detail=f"Error Nuvei: {error_msg}")
-            
-        if nuvei_resp.get("status") != "success":
-            error_msg = nuvei_resp.get("message", "Error en respuesta Nuvei")
-            logger.error(f"❌ Nuvei no success: {error_msg}")
-            raise HTTPException(status_code=500, detail=f"Error Nuvei: {error_msg}")
+
+        logger.info(f"🔎 Respuesta cruda Nuvei: {nuvei_resp}")
+
+        # PRODUCCIÓN: validación correcta
+        if not nuvei_resp.get("success"):
+            detail = nuvei_resp.get("detail") or nuvei_resp.get("message") or "Error desconocido en Nuvei"
+            logger.error(f"❌ Nuvei error: {detail}")
+            raise HTTPException(status_code=500, detail=f"Error Nuvei: {detail}")
 
         data = nuvei_resp.get("data", {})
         order_id = data.get("order", {}).get("id")
         payment_url = data.get("payment", {}).get("payment_url")
 
         if not order_id or not payment_url:
-            logger.error(f"❌ Respuesta incompleta: {nuvei_resp}")
+            logger.error(f"❌ Nuvei devolvió datos incompletos: {nuvei_resp}")
             raise HTTPException(status_code=500, detail="Nuvei no devolvió order_id o payment_url")
 
-        # 4) Guardar order_id en DB
+        # Guardar order_id
         update_payment_intent(intent_id, order_id=order_id)
 
         logger.info(f"✅ Pago creado: intent={intent_id}, order={order_id}")
 
         return {
             "intent_id": intent_id,
-            "order_id": order_id, 
+            "order_id": order_id,
             "payment_url": payment_url
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ ERROR /create_payment: {str(e)}", exc_info=True)
+        logger.error(f"❌ ERROR /create_payment: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error interno creando pago")
+
 
 @router.get("/check_payment/{intent_id}")
 def check_payment(intent_id: int):
