@@ -58,7 +58,7 @@ def create_payment(req: PaymentCreateRequest):
                 "email": f"user{req.telegram_id}@pitiupi.com",
                 "name": "User",                         # obligatorio en PROD
                 "last_name": str(req.telegram_id),
-                "phone": "0989088404"                   # obligatorio formato válido
+                "phone_number": "0989088404"                   # obligatorio formato válido
             },
             "order": {
                 "dev_reference": str(intent_id),
