@@ -48,45 +48,29 @@ class NuveiClient:
         url = f"{self.base_url}/linktopay/init_order/"
 
         try:
-            auth_token = self.generate_auth_token()
-        except Exception as e:
-            logger.error(f"❌ Error con credenciales Nuvei: {e}")
-            return {
-                "status": "error",
-                "message": "Credenciales Nuvei inválidas o no configuradas"
+            headers = {
+                "Content-Type": "application/json",
+                "Auth-Token": self.generate_auth_token()
             }
 
-        headers = {
-            "Content-Type": "application/json",
-            "Auth-Token": auth_token,
-        }
+            logger.info(f"➡ POST {url}")
+            logger.info(f"➡ Payload: {order_data}")
 
-        try:
-            logger.info(f"🔗 Creando LinkToPay...")
-            logger.info(f"📤 URL: {url}")
-            logger.info(f"📦 Order data: {order_data}")
+            resp = requests.post(url, json=order_data, headers=headers, timeout=30)
             
-            response = requests.post(url, json=order_data, headers=headers, timeout=30)
-            logger.info(f"📥 Status Code: {response.status_code}")
-            
-            result = response.json()
-            logger.info(f"📄 Respuesta Nuvei: {result}")
-            return result
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ Error HTTP: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"📄 Respuesta error: {e.response.text}")
-            return {
-                "status": "error", 
-                "message": f"Error de conexión: {str(e)}"
-            }
+            try:
+                data = resp.json()
+            except Exception:
+                logger.error(f"❌ Nuvei respondió NO-JSON ({resp.status_code}): {resp.text}")
+                return {"success": False, "detail": "Nuvei respondió HTML o formato inválido"}
+
+            logger.info(f"🔄 Respuesta Nuvei JSON: {data}")
+            return data
+
         except Exception as e:
-            logger.error(f"❌ Error inesperado: {e}")
-            return {
-                "status": "error",
-                "message": f"Error inesperado: {str(e)}"
-            }
+            logger.error(f"❌ Error HTTP Nuvei: {e}", exc_info=True)
+            return {"success": False, "detail": str(e)}
+
 
     def verify_transaction(self, order_id: str) -> Dict[str, Any]:
         url = f"{self.base_url}/linktopay/check_order/"
