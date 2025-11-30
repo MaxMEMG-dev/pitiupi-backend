@@ -1,20 +1,31 @@
 from datetime import datetime
 from database import get_connection
 
-def create_payment_intent(user_id: int, amount: float) -> int:
+def create_payment_intent(user_id: int, amount: float, order_id: str) -> int:
+    """
+    Crea un intento de pago en PostgreSQL.
+    TODOS los campos obligatorios deben llenarse.
+    """
+
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute(
         """
-        INSERT INTO payment_intents (user_id, amount)
-        VALUES (%s, %s)
+        INSERT INTO payment_intents (
+            user_id,
+            amount,
+            status,
+            created_at,
+            order_id
+        )
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (user_id, amount)
+        (user_id, amount, "pending", datetime.now(), order_id)
     )
 
-    intent_id = cursor.fetchone()["id"]
+    intent_id = cursor.fetchone()[0]
     conn.commit()
     conn.close()
 
@@ -27,9 +38,10 @@ def get_payment_intent(intent_id: int):
 
     cursor.execute(
         """
-        SELECT id, user_id, amount, status, created_at, 
-               transaction_id, authorization_code, status_detail, 
-               paid_at, order_id
+        SELECT
+            id, user_id, amount, status, created_at,
+            transaction_id, authorization_code, status_detail,
+            paid_at, order_id
         FROM payment_intents
         WHERE id = %s
         """,
@@ -59,6 +71,10 @@ def update_payment_intent(intent_id: int, **fields):
 
 
 def mark_intent_paid(intent_id: int, provider_tx_id: str, status_detail: int, authorization_code: str):
+    """
+    Marca un pago como aprobado desde el webhook Nuvei.
+    """
+
     update_payment_intent(
         intent_id,
         status="paid",
@@ -67,6 +83,3 @@ def mark_intent_paid(intent_id: int, provider_tx_id: str, status_detail: int, au
         authorization_code=authorization_code,
         paid_at=datetime.now()
     )
-
-
-
