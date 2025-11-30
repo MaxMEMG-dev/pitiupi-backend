@@ -11,16 +11,14 @@ async def nuvei_callback(request: Request):
         payload = await request.json()
         logger.info(f"[Nuvei] Webhook recibido: {payload}")
 
-        # Validación principal
-        if "data" not in payload:
-            logger.error("Webhook inválido: falta 'data'")
+        # Validación principal - estructura de Nuvei
+        if "status" not in payload:
+            logger.error("Webhook inválido: falta 'status'")
             return {"status": "OK"}
 
-        data = payload["data"]
-
-        # Extraer order
-        order = data.get("order", {})
-        transaction = data.get("transaction", {})
+        # Nuvei envía los datos en el root, no en "data"
+        transaction = payload.get("transaction", {})
+        order = payload.get("order", {})
 
         intent_id = order.get("dev_reference")  # ID interno
         order_id = order.get("id")              # ID de Nuvei
@@ -35,11 +33,13 @@ async def nuvei_callback(request: Request):
             return {"status": "OK"}
 
         intent_id = int(intent_id)
+        logger.info(f"Procesando webhook para intent {intent_id}")
 
         # Guardar el order_id si no lo teníamos
         existing = get_payment_intent(intent_id)
-        if existing and not existing["order_id"]:
+        if existing and not existing["order_id"] and order_id:
             update_payment_intent(intent_id, order_id=order_id)
+            logger.info(f"Order_id {order_id} guardado para intent {intent_id}")
 
         # Validar pago aprobado
         if status == "success" and status_detail == 3:
@@ -49,13 +49,11 @@ async def nuvei_callback(request: Request):
                 status_detail=status_detail,
                 authorization_code=authorization_code
             )
-
-            logger.info(f"[Nuvei] Pago aprobado para intent {intent_id}")
-
+            logger.info(f"[Nuvei] Pago APROBADO para intent {intent_id}")
         else:
             logger.info(f"[Nuvei] Pago no aprobado: status={status} detail={status_detail}")
 
     except Exception as e:
-        logger.error(f"[Nuvei Callback ERROR] {e}")
+        logger.error(f"[Nuvei Callback ERROR] {str(e)}", exc_info=True)
 
     return {"status": "OK"}   # SIEMPRE devolver OK
