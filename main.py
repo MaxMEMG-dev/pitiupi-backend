@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from nuvei_webhook import router as nuvei_router
+from payments_api import router as payments_router
 from database import init_db
 
 app = FastAPI(
@@ -11,8 +12,9 @@ app = FastAPI(
 # Inicializar base de datos
 init_db()
 
-# Rutas del webhook
+# Registrar routers
 app.include_router(nuvei_router)
+app.include_router(payments_router)
 
 
 @app.get("/")
