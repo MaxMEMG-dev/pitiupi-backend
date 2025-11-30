@@ -26,21 +26,31 @@ class NuveiClient:
 
     def generate_auth_token(self) -> str:
         """
-        PRODUCCIÓN Ecuador → Firma HMAC-SHA512(app_key como key, message=app_code+nonce+app_key)
+        Nuvei Ecuador (PROD) - Auth Token oficial:
+
+        raw = APP_CODE + ";" + timestamp + ";" + sha256(APP_KEY + timestamp)
+        token = Base64(raw)
         """
-        nonce = str(int(time.time()))
-        message = f"{self.app_code}{nonce}{self.app_key}"
-        auth_hash = hmac.new(
-            key=self.app_key.encode(),
-            msg=message.encode(),
-            digestmod=hashlib.sha512
-        ).hexdigest()
+        import time
+        import hashlib
+        import base64
 
-        token = f"{self.app_code};{nonce};{auth_hash}"
-        auth_token_b64 = base64.b64encode(token.encode()).decode()
+        timestamp = str(int(time.time()))
 
-        logger.info(f"🔐 Auth-Token generado")
-        return auth_token_b64
+        # uniq_string = secret-key + timestamp
+        uniq_string = self.app_key + timestamp
+
+        # uniq_hash = sha256(uniq_string).hexdigest()
+        uniq_hash = hashlib.sha256(uniq_string.encode()).hexdigest()
+
+        # raw token = app_code ; timestamp ; uniq_hash
+        raw_token = f"{self.app_code};{timestamp};{uniq_hash}"
+
+        # final token = base64(raw_token)
+        auth_token = base64.b64encode(raw_token.encode()).decode()
+
+        return auth_token
+
 
     def create_linktopay(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}/linktopay/init_order/"
