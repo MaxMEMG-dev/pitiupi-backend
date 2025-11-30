@@ -13,7 +13,7 @@ from nuvei_client import NuveiClient
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Cargar credenciales
+# Cargar credenciales SIN VALIDACIÓN QUE BLOQUEE
 APP_CODE = os.getenv("NUVEI_APP_CODE_SERVER")
 APP_KEY = os.getenv("NUVEI_APP_KEY_SERVER") 
 ENV = os.getenv("NUVEI_ENV", "stg")
@@ -23,6 +23,7 @@ logger.info(f"   APP_CODE: {'✅' if APP_CODE else '❌'} {APP_CODE[:8] if APP_C
 logger.info(f"   APP_KEY: {'✅' if APP_KEY else '❌'} {APP_KEY[:8] if APP_KEY else 'NO CONFIGURADA'}...")
 logger.info(f"   ENV: {ENV}")
 
+# Inicializar cliente sin fallar
 client = NuveiClient(APP_CODE, APP_KEY, environment=ENV)
 
 class PaymentCreateRequest(BaseModel):
@@ -36,13 +37,22 @@ def debug_env():
         "NUVEI_APP_CODE_SERVER": os.getenv("NUVEI_APP_CODE_SERVER", "❌ NO CONFIGURADA"),
         "NUVEI_APP_KEY_SERVER": os.getenv("NUVEI_APP_KEY_SERVER", "❌ NO CONFIGURADA"), 
         "NUVEI_ENV": os.getenv("NUVEI_ENV", "❌ NO CONFIGURADA"),
-        "DATABASE_URL": "✅ CONFIGURADA" if os.getenv("DATABASE_URL") else "❌ NO CONFIGURADA"
+        "DATABASE_URL": "✅ CONFIGURADA" if os.getenv("DATABASE_URL") else "❌ NO CONFIGURADA",
+        "status": "Backend funcionando - Verifica variables en Render Dashboard"
     }
 
 @router.post("/create_payment")
 def create_payment(req: PaymentCreateRequest):
     """Crea un intent interno y genera LinkToPay de Nuvei."""
     try:
+        # Verificar si las credenciales están configuradas
+        if not APP_CODE or not APP_KEY:
+            logger.error("❌ Credenciales Nuvei no configuradas")
+            raise HTTPException(
+                status_code=500, 
+                detail="Configuración incompleta. Contacta al administrador."
+            )
+
         logger.info(f"💰 Creando pago para user {req.telegram_id}, amount {req.amount}")
 
         # 1) Crear intent interno
