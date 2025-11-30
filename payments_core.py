@@ -1,10 +1,10 @@
 from datetime import datetime
 from database import get_connection
 
-def create_payment_intent(user_id: int, amount: float, order_id: str) -> int:
+def create_payment_intent(user_id: int, amount: float) -> int:
     """
-    Crea un intento de pago en PostgreSQL.
-    TODOS los campos obligatorios deben llenarse.
+    Crea un intent de pago en PostgreSQL.
+    El order_id se agregará después cuando Nuvei devuelva la orden.
     """
 
     conn = get_connection()
@@ -16,16 +16,15 @@ def create_payment_intent(user_id: int, amount: float, order_id: str) -> int:
             user_id,
             amount,
             status,
-            created_at,
-            order_id
+            created_at
         )
-        VALUES (%s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        (user_id, amount, "pending", datetime.now(), order_id)
+        (user_id, amount, "pending", datetime.now())
     )
 
-    intent_id = cursor.fetchone()[0]
+    intent_id = cursor.fetchone()["id"]
     conn.commit()
     conn.close()
 
@@ -38,10 +37,7 @@ def get_payment_intent(intent_id: int):
 
     cursor.execute(
         """
-        SELECT
-            id, user_id, amount, status, created_at,
-            transaction_id, authorization_code, status_detail,
-            paid_at, order_id
+        SELECT *
         FROM payment_intents
         WHERE id = %s
         """,
@@ -50,7 +46,6 @@ def get_payment_intent(intent_id: int):
 
     row = cursor.fetchone()
     conn.close()
-
     return row
 
 
