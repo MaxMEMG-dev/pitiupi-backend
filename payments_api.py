@@ -56,9 +56,9 @@ def create_payment(req: PaymentCreateRequest):
             "user": {
                 "id": str(req.telegram_id),
                 "email": f"user{req.telegram_id}@pitiupi.com",
-                "name": "User",                         # obligatorio en PROD
+                "name": "User",
                 "last_name": str(req.telegram_id),
-                "phone_number": "0989088404"                   # obligatorio formato válido
+                "phone_number": "0999999999"
             },
             "order": {
                 "dev_reference": str(intent_id),
@@ -73,11 +73,17 @@ def create_payment(req: PaymentCreateRequest):
             "configuration": {
                 "partial_payment": False,
                 "expiration_time": 900,
-                "allowed_payment_methods": ["All"],    # PRODUCCIÓN SOLO ACEPTA STRINGS
-                "success_url": "https://pitiupi.com/success",
-                "failure_url": "https://pitiupi.com/failure",
-                "pending_url": "https://pitiupi.com/pending",
-                "review_url": "https://pitiupi.com/review"
+                "allowed_payment_methods": ["All"],
+        
+                # ===============================
+                # 🔥 REDIRECCIONES A TELEGRAM
+                # ===============================
+                "success_url": "https://t.me/pitiupibot?start=payment_success",
+                "failure_url": "https://t.me/pitiupibot?start=payment_failed",
+        
+                # Estas dependen de la respuesta de Nuvei, pero las apuntamos también al bot
+                "pending_url": "https://t.me/pitiupibot?start=payment_pending",
+                "review_url": "https://t.me/pitiupibot?start=payment_review"
             }
         }
 
