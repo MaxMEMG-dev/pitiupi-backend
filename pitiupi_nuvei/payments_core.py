@@ -1,5 +1,5 @@
 from datetime import datetime
-from database import get_connection
+from pitiupi_nuvei.database import get_connection
 import logging
 
 logger = logging.getLogger(__name__)
@@ -112,3 +112,4 @@ def mark_intent_paid(intent_id: int, provider_tx_id: str, status_detail: int, au
     except Exception as e:
         logger.error(f"Error marcando intent {intent_id} como pagado: {str(e)}")
         raise
+
