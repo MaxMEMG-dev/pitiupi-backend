@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException
-from payments_core import mark_intent_paid, update_payment_intent, get_payment_intent
+from pitiupi_nuvei.payments_core import mark_intent_paid, update_payment_intent, get_payment_intent
 import logging
 
 router = APIRouter()
@@ -57,3 +57,4 @@ async def nuvei_callback(request: Request):
         logger.error(f"[Nuvei Callback ERROR] {str(e)}", exc_info=True)
 
     return {"status": "OK"}   # SIEMPRE devolver OK
+
