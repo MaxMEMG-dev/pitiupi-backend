@@ -3,12 +3,12 @@ from pydantic import BaseModel
 import os
 import logging
 
-from payments_core import (
+from pitiupi_nuvei.payments_core import (
     create_payment_intent,
     update_payment_intent,
     get_payment_intent
 )
-from nuvei_client import NuveiClient
+from pitiupi_nuvei.nuvei_client import NuveiClient
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
