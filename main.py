@@ -45,6 +45,8 @@ def home():
         "message": "Pitiupi Backend listo"
     }
 
+
+
 @app.get("/debug/nvuei")
 def debug_nuvei():
     import os
@@ -54,3 +56,12 @@ def debug_nuvei():
         "NUVEI_ENV": os.getenv("NUVEI_ENV"),
     }
 
+# ----------------------------
+# Endpoint de estadísticas
+# ----------------------------
+from db import get_database_stats
+
+@app.get("/stats")
+def stats():
+    """Devuelve estadísticas generales del sistema PITIUPI."""
+    return get_database_stats()
