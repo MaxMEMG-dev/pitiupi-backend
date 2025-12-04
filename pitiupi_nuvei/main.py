@@ -3,9 +3,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from nuvei_webhook import router as nuvei_router
-from payments_api import router as payments_router
-from database import init_db
+from pitiupi_nuvei.nuvei_webhook import router as nuvei_router
+from pitiupi_nuvei.payments_api import router as payments_router
+from pitiupi_nuvei.database import init_db
 
 app = FastAPI(
     title="Pitiupi Backend",
@@ -65,3 +65,4 @@ from db import get_database_stats
 def stats():
     """Devuelve estadísticas generales del sistema PITIUPI."""
     return get_database_stats()
+
