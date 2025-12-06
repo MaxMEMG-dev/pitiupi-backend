@@ -2,10 +2,15 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
+# Routers (ajustados a tu estructura real)
 from nuvei_webhook import router as nuvei_router
 from payments_api import router as payments_router
+
+# Inicialización de la base de datos
 from database import init_db
+
 
 app = FastAPI(
     title="Pitiupi Backend",
@@ -20,7 +25,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],   # <- permite OPTIONS
+    allow_methods=["*"],   # Permite OPTIONS
     allow_headers=["*"],
 )
 
@@ -32,8 +37,8 @@ init_db()
 # ----------------------------
 # Registrar los routers
 # ----------------------------
-app.include_router(nuvei_router)
-app.include_router(payments_router)
+app.include_router(nuvei_router, prefix="/nuvei", tags=["Nuvei"])
+app.include_router(payments_router, prefix="/payments", tags=["Payments"])
 
 # ----------------------------
 # Endpoint raíz
@@ -45,23 +50,27 @@ def home():
         "message": "Pitiupi Backend listo"
     }
 
-
-
-@app.get("/debug/nvuei")
+# ----------------------------
+# Debug credenciales Nuvei
+# ----------------------------
+@app.get("/debug/nuvei")
 def debug_nuvei():
-    import os
     return {
         "NUVEI_APP_CODE_SERVER": os.getenv("NUVEI_APP_CODE_SERVER"),
         "NUVEI_APP_KEY_SERVER": os.getenv("NUVEI_APP_KEY_SERVER"),
         "NUVEI_ENV": os.getenv("NUVEI_ENV"),
     }
 
-# ----------------------------
-# Endpoint de estadísticas
-# ----------------------------
-from db import get_database_stats
 
+# ----------------------------
+# Stats – simple placeholder
+# ----------------------------
 @app.get("/stats")
 def stats():
     """Devuelve estadísticas generales del sistema PITIUPI."""
-    return get_database_stats()
+    return {
+        "status": "ok",
+        "db": "connected",
+        "payments": "ready",
+        "nuvei": "ready",
+    }
