@@ -24,7 +24,7 @@ from payments_api import router as payments_router
 # ----------------------------
 # Inicialización de la base de datos
 # ----------------------------
-from init_db import run_migrations
+from _init_db import run_migrations
 
 # Ejecutar migraciones
 logger.info("🔧 Ejecutando inicialización de base de datos...")
@@ -99,3 +99,4 @@ def stats():
         "nuvei_module": "ready",
         "version": "1.0.0"
     }
+
