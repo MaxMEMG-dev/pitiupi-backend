@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# MODELO Pydantic
+# MODELO Pydantic (sanitiza datos vacíos)
 # ============================================================
 class UserRegister(BaseModel):
     telegram_id: int
@@ -27,13 +27,14 @@ class UserRegister(BaseModel):
 
     @validator("*", pre=True)
     def empty_to_none(cls, v):
+        """Evita insertar cadenas vacías en PostgreSQL."""
         if v == "" or v is None:
             return None
         return v
 
 
 # ============================================================
-# REGISTRO / ACTUALIZACIÓN DE USUARIO
+# POST /users/register → Registrar o actualizar usuario
 # ============================================================
 @router.post("/register")
 def register_user(data: UserRegister):
@@ -107,6 +108,53 @@ def register_user(data: UserRegister):
             status_code=500,
             detail="Error registrando usuario en PostgreSQL"
         )
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# GET /users/{telegram_id} → Obtener usuario desde PostgreSQL
+# ============================================================
+@router.get("/{telegram_id}")
+def get_user(telegram_id: int):
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            SELECT
+                id,
+                telegram_id,
+                telegram_first_name AS first_name,
+                telegram_last_name AS last_name,
+                email,
+                phone,
+                country,
+                city,
+                document_number,
+                created_at,
+                updated_at
+            FROM users
+            WHERE telegram_id = %s
+            LIMIT 1;
+        """, (telegram_id,))
+
+        row = cursor.fetchone()
+
+        if not row:
+            logger.warning(f"⚠️ Usuario {telegram_id} NO encontrado en PostgreSQL")
+            raise HTTPException(404, "Usuario no encontrado")
+
+        return {"success": True, "user": row}
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        logger.error(f"❌ Error obteniendo usuario {telegram_id}: {e}", exc_info=True)
+        raise HTTPException(500, "Error interno consultando usuario")
 
     finally:
         conn.close()
