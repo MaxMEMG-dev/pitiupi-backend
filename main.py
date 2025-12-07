@@ -3,42 +3,65 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import logging
 
-# Routers (ajustados a tu estructura real)
+# ----------------------------
+# Configuración de logging
+# ----------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+logger = logging.getLogger(__name__)
+
+# ----------------------------
+# Importación de routers
+# ----------------------------
 from nuvei_webhook import router as nuvei_router
 from payments_api import router as payments_router
 
+# ----------------------------
 # Inicialización de la base de datos
-from database import init_db
+# ----------------------------
+from init_db import run_migrations
+
+# Ejecutar migraciones
+logger.info("🔧 Ejecutando inicialización de base de datos...")
+run_migrations()
 
 
+# ----------------------------
+# FASTAPI APP
+# ----------------------------
 app = FastAPI(
     title="Pitiupi Backend",
-    description="Backend con integración Nuvei LinkToPay",
+    description="Backend oficial PITIUPI con integración Nuvei LinkToPay",
     version="1.0.0",
 )
 
 # ----------------------------
-# CORS – PERMITE OPTIONS
+# CORS CONFIG
 # ----------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],   # Permite OPTIONS
+    allow_methods=["*"],  # Incluye OPTIONS
     allow_headers=["*"],
 )
 
-# ----------------------------
-# Inicializar base de datos
-# ----------------------------
-init_db()
+logger.info("🌍 CORS habilitado correctamente")
+
 
 # ----------------------------
-# Registrar los routers
+# Registrar Routers
 # ----------------------------
 app.include_router(nuvei_router, prefix="/nuvei", tags=["Nuvei"])
 app.include_router(payments_router, prefix="/payments", tags=["Payments"])
+
+logger.info("📦 Routers registrados exitosamente")
+
 
 # ----------------------------
 # Endpoint raíz
@@ -47,8 +70,9 @@ app.include_router(payments_router, prefix="/payments", tags=["Payments"])
 def home():
     return {
         "status": "running",
-        "message": "Pitiupi Backend listo"
+        "message": "Pitiupi Backend listo 🚀"
     }
+
 
 # ----------------------------
 # Debug credenciales Nuvei
@@ -63,14 +87,15 @@ def debug_nuvei():
 
 
 # ----------------------------
-# Stats – simple placeholder
+# Stats – para monitoreo
 # ----------------------------
 @app.get("/stats")
 def stats():
     """Devuelve estadísticas generales del sistema PITIUPI."""
     return {
         "status": "ok",
-        "db": "connected",
-        "payments": "ready",
-        "nuvei": "ready",
+        "database": "connected",
+        "payments_module": "ready",
+        "nuvei_module": "ready",
+        "version": "1.0.0"
     }
