@@ -1,61 +1,57 @@
-# main.py
+# ============================================================
+# main.py — PITIUPI Backend (FastAPI + PostgreSQL + Nuvei)
+# ============================================================
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
-import logging
 
-# ----------------------------
-# Configuración de logging
-# ----------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
-logger = logging.getLogger(__name__)
-
-# ----------------------------
-# Importación de routers
-# ----------------------------
-from nuvei_webhook import router as nuvei_router
+# Routers del sistema
+from users_api import router as users_router
 from payments_api import router as payments_router
+from nuvei_webhook import router as nuvei_router
 
-# ----------------------------
-# FASTAPI APP
-# ----------------------------
+# Inicialización de base de datos
+from database import init_db
+
+
+# ============================================================
+# Inicializar APP FastAPI
+# ============================================================
 app = FastAPI(
     title="Pitiupi Backend",
-    description="Backend oficial PITIUPI con integración Nuvei LinkToPay",
+    description="Backend centralizado para PITIUPI — Sincronización Telegram + Nuvei LinkToPay",
     version="1.0.0",
 )
 
-# ----------------------------
-# CORS CONFIG
-# ----------------------------
+# ============================================================
+# CORS — Permitir llamadas desde el bot
+# ============================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],          # Puedes restringir si deseas
     allow_credentials=True,
-    allow_methods=["*"],  # Incluye OPTIONS
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-logger.info("🌍 CORS habilitado correctamente")
+# ============================================================
+# Inicialización de la Base de Datos
+# ============================================================
+init_db()
 
 
-# ----------------------------
-# Registrar Routers
-# ----------------------------
-app.include_router(nuvei_router, prefix="/nuvei", tags=["Nuvei"])
+# ============================================================
+# Registro de Routers
+# ============================================================
+app.include_router(users_router, prefix="/users", tags=["Users"])
 app.include_router(payments_router, prefix="/payments", tags=["Payments"])
+app.include_router(nuvei_router, prefix="/nuvei", tags=["Nuvei"])
 
-logger.info("📦 Routers registrados exitosamente")
 
-
-# ----------------------------
-# Endpoint raíz
-# ----------------------------
+# ============================================================
+# ENDPOINT RAÍZ
+# ============================================================
 @app.get("/")
 def home():
     return {
@@ -64,9 +60,9 @@ def home():
     }
 
 
-# ----------------------------
+# ============================================================
 # Debug credenciales Nuvei
-# ----------------------------
+# ============================================================
 @app.get("/debug/nuvei")
 def debug_nuvei():
     return {
@@ -76,18 +72,14 @@ def debug_nuvei():
     }
 
 
-# ----------------------------
-# Stats – para monitoreo
-# ----------------------------
+# ============================================================
+# Stats
+# ============================================================
 @app.get("/stats")
 def stats():
-    """Devuelve estadísticas generales del sistema PITIUPI."""
     return {
         "status": "ok",
-        "database": "connected",
-        "payments_module": "ready",
-        "nuvei_module": "ready",
-        "version": "1.0.0"
+        "db": "connected",
+        "payments": "ready",
+        "nuvei": "ready",
     }
-
-
