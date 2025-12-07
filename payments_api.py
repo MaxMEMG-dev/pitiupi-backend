@@ -28,7 +28,6 @@ ENV = os.getenv("NUVEI_ENV", "stg")
 if not APP_CODE or not APP_KEY:
     logger.error("❌ NUVEI_APP_CODE_SERVER o NUVEI_APP_KEY_SERVER no configurados")
 
-
 client = NuveiClient(APP_CODE, APP_KEY, environment=ENV)
 
 
@@ -69,7 +68,7 @@ def create_payment(req: PaymentCreateRequest):
             )
 
         # ------------------------------------------------------------
-        # 2️⃣ Crear intent interno (PITIUPI)
+        # 2️⃣ Crear intent interno
         # ------------------------------------------------------------
         intent_id = create_payment_intent(req.telegram_id, req.amount)
         logger.info(f"📝 Intent interno creado: {intent_id}")
@@ -77,7 +76,7 @@ def create_payment(req: PaymentCreateRequest):
         amount = float(req.amount)
 
         # ------------------------------------------------------------
-        # 3️⃣ PREPARAR PAYLOAD NUVEI (Formato oficial 2025)
+        # 3️⃣ PREPARAR PAYLOAD (Cumple documentación oficial 2025)
         # ------------------------------------------------------------
         order_data = {
             "user": {
@@ -86,8 +85,9 @@ def create_payment(req: PaymentCreateRequest):
                 "name": user["first_name"],
                 "last_name": user["last_name"] or user["first_name"],
                 "phone_number": user["phone"],
-                "fiscal_number": user["document_number"],
-                "fiscal_number_type": "id"
+                "fiscal_number": user["document_number"]
+                # ❌ Se eliminó fiscal_number_type porque Nuvei lo rechazaba
+                # Este campo es opcional según la documentación
             },
             "billing_address": {
                 "street": "Sin calle",
@@ -100,6 +100,7 @@ def create_payment(req: PaymentCreateRequest):
                 "description": "Recarga PITIUPI",
                 "amount": amount,
                 "currency": "USD",
+                # Para Ecuador: installments_type es obligatorio
                 "installments_type": 0,
                 "vat": 0,
                 "taxable_amount": amount,
@@ -110,7 +111,7 @@ def create_payment(req: PaymentCreateRequest):
                 "expiration_time": 900,
                 "allowed_payment_methods": ["All"],
 
-                # 🔥 REDIRECCIONES TELEGRAM
+                # 🔥 Redirecciones Telegram
                 "success_url": "https://t.me/pitiupibot?start=payment_success",
                 "failure_url": "https://t.me/pitiupibot?start=payment_failed",
                 "pending_url": "https://t.me/pitiupibot?start=payment_pending",
@@ -124,7 +125,6 @@ def create_payment(req: PaymentCreateRequest):
         # 4️⃣ Enviar a Nuvei
         # ------------------------------------------------------------
         nuvei_resp = client.create_linktopay(order_data)
-
         logger.info(f"📥 Respuesta Nuvei: {nuvei_resp}")
 
         if not nuvei_resp.get("success"):
@@ -144,7 +144,7 @@ def create_payment(req: PaymentCreateRequest):
             raise HTTPException(500, "Nuvei no entregó order_id o payment_url")
 
         # ------------------------------------------------------------
-        # 6️⃣ Guardar order_id del intent
+        # 6️⃣ Guardar order_id del intent interno
         # ------------------------------------------------------------
         update_payment_intent(intent_id, order_id=order_id)
 
