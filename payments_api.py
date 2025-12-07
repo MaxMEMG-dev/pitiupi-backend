@@ -87,7 +87,7 @@ def create_payment(req: PaymentCreateRequest):
                 "last_name": user["last_name"] or user["first_name"],
                 "phone_number": user["phone"],
                 "fiscal_number": user["document_number"],
-                "fiscal_number_type": "cedula"
+                "fiscal_number_type": "id"
             },
             "billing_address": {
                 "street": "Sin calle",
