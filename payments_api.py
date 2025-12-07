@@ -8,7 +8,7 @@ from payments_core import (
     update_payment_intent,
 )
 from nuvei_client import NuveiClient
-from users_db import get_user_data
+from user_db import get_user_data
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
