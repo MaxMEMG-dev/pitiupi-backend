@@ -5,22 +5,42 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ================================
+#  DATABASE URL (Render PostgreSQL)
+# ================================
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+if not DATABASE_URL:
+    raise RuntimeError("❌ ERROR: DATABASE_URL no está definida en variables de entorno")
 
+
+# ================================
+#  Obtener conexión PostgreSQL
+# ================================
 def get_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    try:
+        return psycopg2.connect(
+            DATABASE_URL,
+            cursor_factory=RealDictCursor
+        )
+    except Exception as e:
+        logger.error(f"❌ No se pudo conectar a PostgreSQL: {e}")
+        raise
 
 
+# ================================
+#  Inicializar Base de Datos
+# ================================
 def init_db():
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
+        logger.info("🔗 Conexión con PostgreSQL establecida correctamente")
 
-        # ============================
-        #   TABLA USERS (REQUIRED)
-        # ============================
+        # ============================================
+        #   TABLA USERS  (USUARIOS REGISTRADOS DEL BOT)
+        # ============================================
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -38,10 +58,11 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             );
         """)
+        logger.info("🟢 Tabla 'users' verificada/creada")
 
-        # ============================
-        #   TABLA PAYMENT INTENTS
-        # ============================
+        # ============================================
+        #   TABLA PAYMENT INTENTS  (INTENTOS DE PAGO)
+        # ============================================
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS payment_intents (
                 id SERIAL PRIMARY KEY,
@@ -58,12 +79,13 @@ def init_db():
                 order_id VARCHAR(255)
             );
         """)
+        logger.info("🟢 Tabla 'payment_intents' verificada/creada")
 
         conn.commit()
-        logger.info("Base de datos inicializada correctamente (users + payment_intents)")
+        logger.info("✅ Base de datos inicializada correctamente (users + payment_intents)")
 
     except Exception as e:
-        logger.error(f"Error inicializando BD: {str(e)}")
+        logger.error(f"❌ Error inicializando BD: {str(e)}")
         if conn:
             conn.rollback()
         raise
@@ -71,3 +93,4 @@ def init_db():
     finally:
         if conn:
             conn.close()
+            logger.info("🔒 Conexión PostgreSQL cerrada")
