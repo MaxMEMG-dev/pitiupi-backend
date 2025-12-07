@@ -1,13 +1,12 @@
 # ============================================================
-# users_api.py — Gestión de usuarios para PostgreSQL (Render)
-# PITIUPI v5.0 — Arquitectura Backend + Bot Telegram
+# users_api.py — Gestión de usuarios PostgreSQL (Render)
+# PITIUPI v5.0 — Backend oficial
 # ============================================================
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, validator
 from database import get_connection
 import logging
-from datetime import datetime
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -28,7 +27,6 @@ class UserRegister(BaseModel):
 
     @validator("*", pre=True)
     def empty_to_none(cls, v):
-        """Evita insertar cadenas vacías en PostgreSQL."""
         if v == "" or v is None:
             return None
         return v
@@ -40,7 +38,7 @@ class UserRegister(BaseModel):
 @router.post("/register")
 def register_user(data: UserRegister):
 
-    logger.info(f"📥 Recibido registro usuario: {data.telegram_id}")
+    logger.info(f"📥 Recibido registro usuario TelegramID={data.telegram_id}")
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -56,9 +54,10 @@ def register_user(data: UserRegister):
                 country,
                 city,
                 document_number,
-                created_at
+                created_at,
+                updated_at
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
             ON CONFLICT (telegram_id)
             DO UPDATE SET
                 telegram_first_name = COALESCE(EXCLUDED.telegram_first_name, users.telegram_first_name),
@@ -67,7 +66,8 @@ def register_user(data: UserRegister):
                 phone               = COALESCE(EXCLUDED.phone, users.phone),
                 country             = COALESCE(EXCLUDED.country, users.country),
                 city                = COALESCE(EXCLUDED.city, users.city),
-                document_number     = COALESCE(EXCLUDED.document_number, users.document_number)
+                document_number     = COALESCE(EXCLUDED.document_number, users.document_number),
+                updated_at          = NOW()
             RETURNING id,
                       telegram_id,
                       telegram_first_name,
@@ -77,7 +77,8 @@ def register_user(data: UserRegister):
                       country,
                       city,
                       document_number,
-                      created_at;
+                      created_at,
+                      updated_at;
         """, (
             data.telegram_id,
             data.first_name,
@@ -92,7 +93,7 @@ def register_user(data: UserRegister):
         user_row = cursor.fetchone()
         conn.commit()
 
-        logger.info(f"✅ Usuario sincronizado con éxito (ID {user_row['id']})")
+        logger.info(f"✅ Usuario sincronizado con éxito: ID={user_row['id']}")
 
         return {
             "success": True,
@@ -101,10 +102,10 @@ def register_user(data: UserRegister):
 
     except Exception as e:
         conn.rollback()
-        logger.error(f"❌ Error registrando usuario: {e}")
+        logger.error(f"❌ Error registrando usuario: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Error registrando usuario en PostgreSQL: {str(e)}"
+            detail="Error registrando usuario en PostgreSQL"
         )
 
     finally:
