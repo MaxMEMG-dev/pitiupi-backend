@@ -10,12 +10,11 @@ logger = logging.getLogger(__name__)
 
 class NuveiClient:
     """
-    Cliente oficial para consumir Nuvei LinkToPay (Ecuador)
-    Incluye:
-    - Generación del Auth-Token
-    - Manejo de errores HTTP
-    - Parseo seguro de JSON
-    - Logs completos
+    Cliente oficial y robusto para Nuvei LinkToPay (Ecuador)
+    - Autenticación Auth-Token
+    - Validación estricta de errores HTTP
+    - Soporta JSON inválido o HTML erróneo
+    - Logs de diagnóstico completos
     """
 
     def __init__(self, app_code: str, app_key: str, environment: str = "stg"):
@@ -27,11 +26,11 @@ class NuveiClient:
         else:
             self.base_url = "https://noccapi-stg.paymentez.com"
 
-        logger.info(f"🌐 NuveiClient iniciado en '{environment}'")
+        logger.info(f"🌐 NuveiClient iniciado en entorno='{environment}'")
         logger.info(f"🔑 Base URL: {self.base_url}")
 
     # ---------------------------------------------------------
-    # 🔐 GENERAR AUTH TOKEN (OFICIAL NUVEI)
+    # 🔐 GENERAR AUTH TOKEN (OFICIAL)
     # ---------------------------------------------------------
     def generate_auth_token(self) -> str:
         timestamp = str(int(time.time()))
@@ -57,36 +56,57 @@ class NuveiClient:
 
         logger.info(f"➡ POST {url}")
         logger.info(f"➡ Headers: {headers}")
-        logger.info(f"➡ Payload: {order_data}")
+        logger.info(f"➡ Payload enviado: {order_data}")
 
+        # -----------------------------
+        # INTENTAR CONEXIÓN
+        # -----------------------------
         try:
             response = requests.post(url, json=order_data, headers=headers, timeout=30)
+
+        except requests.exceptions.Timeout:
+            logger.error("❌ ERROR: Timeout conectando a Nuvei")
+            return {
+                "success": False,
+                "detail": "Timeout al conectar con Nuvei"
+            }
+
         except Exception as e:
             logger.error(f"❌ Error de conexión con Nuvei: {e}", exc_info=True)
             return {"success": False, "detail": f"Error de conexión: {e}"}
 
-        # ---------------------------------------------------------
-        # 🛑 Validar códigos HTTP
-        # ---------------------------------------------------------
+        # -----------------------------
+        # MANEJO DE STATUS CODES
+        # -----------------------------
         if response.status_code >= 500:
             logger.error(f"❌ Nuvei error 500: {response.text}")
-            return {"success": False, "detail": "Error interno de Nuvei (500)", "raw": response.text}
+            return {
+                "success": False,
+                "detail": "Error interno de Nuvei (500)",
+                "raw": response.text
+            }
 
         if response.status_code == 401:
-            logger.error("❌ Auth-Token inválido")
+            logger.error("❌ Auth-Token inválido (401)")
             return {"success": False, "detail": "Auth-Token inválido (401)"}
 
         if response.status_code == 400:
             logger.error(f"❌ Error 400 — Payload inválido: {response.text}")
-            return {"success": False, "detail": f"Payload inválido (400)", "raw": response.text}
+            parsed = self._safe_json(response)
+            return {
+                "success": False,
+                "detail": "Payload inválido (400)",
+                "error": parsed,
+                "raw": response.text
+            }
 
-        # ---------------------------------------------------------
-        # 📦 Parsear JSON o detectar HTML
-        # ---------------------------------------------------------
-        try:
-            data = response.json()
-        except Exception:
-            logger.error(f"❌ Nuvei devolvió HTML/no-JSON: {response.text}")
+        # -----------------------------
+        # PROCESAR RESPUESTA
+        # -----------------------------
+        data = self._safe_json(response)
+
+        if data is None:
+            logger.error(f"❌ Respuesta Nuvei no es JSON válido: {response.text}")
             return {
                 "success": False,
                 "detail": "Nuvei devolvió una respuesta no JSON",
@@ -95,15 +115,25 @@ class NuveiClient:
 
         logger.info(f"🔄 Respuesta JSON Nuvei: {data}")
 
-        # ---------------------------------------------------------
-        # 🧪 Validar formato mínimo
-        # ---------------------------------------------------------
-        if "success" not in data:
-            logger.error("❌ La respuesta no contiene 'success'")
+        # -----------------------------
+        # VALIDAR ESTRUCTURA MÍNIMA
+        # -----------------------------
+        if not isinstance(data, dict) or "success" not in data:
+            logger.error(f"❌ Respuesta Nuvei inválida, falta 'success': {data}")
             return {
                 "success": False,
-                "detail": "Respuesta Nuvei inválida (falta success)",
-                "raw": data,
+                "detail": "Respuesta Nuvei inválida (falta 'success')",
+                "raw": data
             }
 
         return data
+
+    # ---------------------------------------------------------
+    # UTILIDAD: Parseo seguro de JSON
+    # ---------------------------------------------------------
+    def _safe_json(self, response):
+        """Intenta convertir a JSON. Si falla, retorna None."""
+        try:
+            return response.json()
+        except Exception:
+            return None
