@@ -164,3 +164,42 @@ def mark_intent_paid(
             exc_info=True
         )
         raise
+
+# ============================================================
+# 🟣 INCREMENTA EL BALANCE (ACTUALIZA)
+# ============================================================
+def add_user_balance(user_id: int, amount: float):
+    """
+    Suma el monto al balance actual del usuario.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE users 
+            SET balance = COALESCE(balance, 0) + %s
+            WHERE telegram_id = %s
+            RETURNING balance;
+        """, (amount, user_id))
+
+        row = cursor.fetchone()
+        conn.commit()
+
+        new_balance = row["balance"] if row else None
+        logger.info(f"💰 Balance actualizado para user {user_id}: {new_balance}")
+
+        return new_balance
+
+    except Exception as e:
+        logger.error(f"❌ Error actualizando balance para {user_id}: {e}")
+        if conn:
+            conn.rollback()
+        raise
+
+    finally:
+        if conn:
+            conn.close()
+
+
