@@ -163,3 +163,11 @@ def create_payment(req: PaymentCreateRequest):
     except Exception as e:
         logger.error(f"❌ Error en create_payment: {e}", exc_info=True)
         raise HTTPException(500, "Error interno creando pago")
+
+@router.get("/get_intent/{intent_id}")
+def get_intent(intent_id: int):
+    intent = get_payment_intent(intent_id)
+    if not intent:
+        raise HTTPException(404, "Intent no encontrado")
+    return {"success": True, "intent": intent}
+
