@@ -18,11 +18,14 @@ if not DATABASE_URL:
 #  Obtener conexión PostgreSQL
 # ================================
 def get_connection():
+    """Conexión centralizada a PostgreSQL para todo el backend."""
     try:
-        return psycopg2.connect(
+        conn = psycopg2.connect(
             DATABASE_URL,
             cursor_factory=RealDictCursor
         )
+        logger.debug("🔗 Conexión PostgreSQL establecida")
+        return conn
     except Exception as e:
         logger.error(f"❌ No se pudo conectar a PostgreSQL: {e}")
         raise
@@ -54,6 +57,7 @@ def init_db():
                 country VARCHAR(100),
                 city VARCHAR(100),
                 document_number VARCHAR(50),
+                balance NUMERIC(10,2) DEFAULT 0.00,
 
                 created_at TIMESTAMP DEFAULT NOW()
             );
@@ -69,6 +73,7 @@ def init_db():
                 user_id BIGINT NOT NULL,
                 amount NUMERIC(10,2) NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                message TEXT,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 paid_at TIMESTAMP NULL,
 
