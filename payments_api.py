@@ -4,7 +4,7 @@
 # ============================================================
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, validator  # ✅ Agregar validator aquí
 import os
 import logging
 
@@ -14,7 +14,7 @@ from payments_core import (
     get_payment_intent,
 )
 from nuvei_client import NuveiClient
-from database import get_connection  # 🔥 Usar conexión centralizada
+from database import get_connection
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
