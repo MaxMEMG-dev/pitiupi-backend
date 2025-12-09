@@ -4,7 +4,7 @@
 # ============================================================
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, validator  # ✅ Agregar validator aquí
+from pydantic import BaseModel, validator
 import os
 import logging
 
@@ -18,6 +18,7 @@ from database import get_connection
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
 
 # ============================================================
 # CREDENCIALES NUVEI
@@ -33,23 +34,19 @@ client = NuveiClient(APP_CODE, APP_KEY, environment=ENV)
 
 
 # ============================================================
-# FUNCIÓN LOCAL: Obtener datos de usuario
+# FUNCIÓN LOCAL: Obtener datos de usuario desde PostgreSQL
 # ============================================================
 def get_user_data(telegram_id: int):
-    """
-    Devuelve un dict con todos los datos del usuario necesarios
-    para crear LinkToPay (según documentación Nuvei 2025).
-    """
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
+
         query = """
             SELECT
                 telegram_id,
                 telegram_first_name AS first_name,
-                telegram_last_name AS last_name,
+                telegram_last_name  AS last_name,
                 email,
                 phone,
                 country,
@@ -60,20 +57,20 @@ def get_user_data(telegram_id: int):
             WHERE telegram_id = %s
             LIMIT 1;
         """
-        
+
         cursor.execute(query, [telegram_id])
         row = cursor.fetchone()
-        
+
         if not row:
             logger.warning(f"⚠️ Usuario {telegram_id} no existe en PostgreSQL")
             return None
-        
+
         return row
-        
+
     except Exception as e:
         logger.error(f"❌ Error obteniendo usuario {telegram_id}: {e}", exc_info=True)
         return None
-        
+
     finally:
         if conn:
             conn.close()
@@ -85,7 +82,7 @@ def get_user_data(telegram_id: int):
 class PaymentCreateRequest(BaseModel):
     telegram_id: int
     amount: float
-    
+
     @validator("amount")
     def validate_amount(cls, v):
         if v <= 0:
@@ -107,12 +104,20 @@ def create_payment(req: PaymentCreateRequest):
         user = get_user_data(req.telegram_id)
 
         if not user:
-            logger.error(f"❌ Usuario {req.telegram_id} no existe en PostgreSQL")
             raise HTTPException(404, "Usuario no encontrado")
 
-        # Validar campos esenciales para Nuvei
+        # ------------------------------------------------------------
+        # Validar campos obligatorios sin usar .get()
+        # (RealDictRow no soporta .get de forma consistente)
+        # ------------------------------------------------------------
         REQUIRED_FIELDS = ["email", "phone", "document_number", "first_name", "city", "country"]
-        missing = [f for f in REQUIRED_FIELDS if not user.get(f)]
+
+        missing = []
+        for field in REQUIRED_FIELDS:
+            value = user[field] if field in user else None
+            if not value:
+                missing.append(field)
+
         if missing:
             logger.error(f"❌ Usuario incompleto. Faltan: {missing}")
             raise HTTPException(
@@ -122,14 +127,14 @@ def create_payment(req: PaymentCreateRequest):
 
         # ------------------------------------------------------------
         # 2️⃣ Crear intent interno
-        #    🔹 Aquí usamos el TELEGRAM_ID como user_id en payment_intents
         # ------------------------------------------------------------
         amount = float(req.amount)
         intent_id = create_payment_intent(req.telegram_id, amount)
+
         logger.info(f"📝 Intent interno creado: {intent_id}")
 
         # ------------------------------------------------------------
-        # 3️⃣ PREPARAR PAYLOAD (Cumple documentación oficial 2025)
+        # 3️⃣ PREPARAR PAYLOAD OFICIAL NUVEI 2025
         # ------------------------------------------------------------
         order_data = {
             "user": {
@@ -144,7 +149,7 @@ def create_payment(req: PaymentCreateRequest):
                 "street": "Sin calle",
                 "city": user["city"],
                 "zip": "000000",
-                "country": "ECU"
+                "country": "ECU",
             },
             "order": {
                 "dev_reference": str(intent_id),
@@ -154,17 +159,16 @@ def create_payment(req: PaymentCreateRequest):
                 "installments_type": 0,
                 "vat": 0,
                 "taxable_amount": amount,
-                "tax_percentage": 0
+                "tax_percentage": 0,
             },
             "configuration": {
                 "partial_payment": False,
                 "expiration_time": 900,
                 "allowed_payment_methods": ["All"],
-                # 🔥 Redirecciones Telegram
                 "success_url": "https://t.me/pitiupibot?start=payment_success",
                 "failure_url": "https://t.me/pitiupibot?start=payment_failed",
                 "pending_url": "https://t.me/pitiupibot?start=payment_pending",
-                "review_url": "https://t.me/pitiupibot?start=payment_review"
+                "review_url": "https://t.me/pitiupibot?start=payment_review",
             }
         }
 
@@ -174,35 +178,36 @@ def create_payment(req: PaymentCreateRequest):
         # 4️⃣ Enviar a Nuvei
         # ------------------------------------------------------------
         nuvei_resp = client.create_linktopay(order_data)
+
         logger.info(f"📥 Respuesta Nuvei: {nuvei_resp}")
 
         if not nuvei_resp.get("success"):
             detail = nuvei_resp.get("detail") or "Error desconocido en Nuvei"
-            logger.error(f"❌ Error Nuvei → {detail}")
             raise HTTPException(500, f"Error Nuvei: {detail}")
 
         # ------------------------------------------------------------
-        # 5️⃣ Leer datos de Nuvei
+        # 5️⃣ Leer datos obligatorios
         # ------------------------------------------------------------
         data = nuvei_resp.get("data", {})
         order_id = data.get("order", {}).get("id")
         payment_url = data.get("payment", {}).get("payment_url")
 
         if not order_id or not payment_url:
-            logger.error(f"❌ Nuvei devolvió respuesta incompleta: {nuvei_resp}")
+            logger.error(f"❌ Respuesta incompleta de Nuvei: {nuvei_resp}")
             raise HTTPException(500, "Nuvei no entregó order_id o payment_url")
 
         # ------------------------------------------------------------
         # 6️⃣ Guardar order_id del intent interno
         # ------------------------------------------------------------
         update_payment_intent(intent_id, order_id=order_id)
+
         logger.info(f"✅ LinkToPay generado → Intent {intent_id} | Order {order_id}")
 
         return {
             "success": True,
             "intent_id": intent_id,
             "order_id": order_id,
-            "payment_url": payment_url
+            "payment_url": payment_url,
         }
 
     except HTTPException:
