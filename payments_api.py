@@ -14,7 +14,7 @@ from payments_core import (
     get_payment_intent,
 )
 from nuvei_client import NuveiClient
-from user_db import get_user_data
+from database import get_connection  # 🔥 Usar conexión centralizada
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -33,11 +33,64 @@ client = NuveiClient(APP_CODE, APP_KEY, environment=ENV)
 
 
 # ============================================================
+# FUNCIÓN LOCAL: Obtener datos de usuario
+# ============================================================
+def get_user_data(telegram_id: int):
+    """
+    Devuelve un dict con todos los datos del usuario necesarios
+    para crear LinkToPay (según documentación Nuvei 2025).
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT
+                telegram_id,
+                telegram_first_name AS first_name,
+                telegram_last_name AS last_name,
+                email,
+                phone,
+                country,
+                city,
+                document_number,
+                created_at
+            FROM users
+            WHERE telegram_id = %s
+            LIMIT 1;
+        """
+        
+        cursor.execute(query, [telegram_id])
+        row = cursor.fetchone()
+        
+        if not row:
+            logger.warning(f"⚠️ Usuario {telegram_id} no existe en PostgreSQL")
+            return None
+        
+        return row
+        
+    except Exception as e:
+        logger.error(f"❌ Error obteniendo usuario {telegram_id}: {e}", exc_info=True)
+        return None
+        
+    finally:
+        if conn:
+            conn.close()
+
+
+# ============================================================
 # MODELO REQUEST
 # ============================================================
 class PaymentCreateRequest(BaseModel):
     telegram_id: int
     amount: float
+    
+    @validator("amount")
+    def validate_amount(cls, v):
+        if v <= 0:
+            raise ValueError("El monto debe ser mayor a 0")
+        return v
 
 
 # ============================================================
@@ -86,7 +139,6 @@ def create_payment(req: PaymentCreateRequest):
                 "last_name": user["last_name"] or user["first_name"],
                 "phone_number": user["phone"],
                 "fiscal_number": user["document_number"],
-                # fiscal_number_type es opcional, lo omitimos porque antes daba error
             },
             "billing_address": {
                 "street": "Sin calle",
@@ -99,7 +151,6 @@ def create_payment(req: PaymentCreateRequest):
                 "description": "Recarga PITIUPI",
                 "amount": amount,
                 "currency": "USD",
-                # Para Ecuador: installments_type es obligatorio
                 "installments_type": 0,
                 "vat": 0,
                 "taxable_amount": amount,
@@ -156,6 +207,10 @@ def create_payment(req: PaymentCreateRequest):
 
     except HTTPException:
         raise
+
+    except ValueError as e:
+        logger.error(f"❌ Error de validación: {e}")
+        raise HTTPException(400, str(e))
 
     except Exception as e:
         logger.error(f"❌ Error en create_payment: {e}", exc_info=True)
