@@ -158,3 +158,70 @@ def get_user(telegram_id: int):
 
     finally:
         conn.close()
+
+async def continue_onboarding(message: Message, state: FSMContext, user):
+
+    missing = []
+
+    # Nombre
+    first_name = (
+        getattr(user, "telegram_first_name", None) or
+        getattr(user, "first_name", None)
+    )
+    if not first_name:
+        missing.append("name")
+
+    # País
+    elif not (getattr(user, 'country', None)):
+        missing.append("country")
+
+    # Ciudad
+    elif not (getattr(user, 'city', None)):
+        missing.append("city")
+
+    # Documento
+    elif not (getattr(user, 'document_number', None)):
+        missing.append("document")
+
+    # Fecha nacimiento
+    elif not (getattr(user, 'birthdate', None)):
+        missing.append("birthdate")
+
+    # Email
+    elif not (getattr(user, 'email', None)):
+        missing.append("email")
+
+    # Teléfono
+    elif not (getattr(user, 'phone', None)):
+        missing.append("phone")
+
+    # Username (@)
+    elif not (
+        getattr(user, 'telegram_username', None)
+        or getattr(user, 'username', None)
+    ):
+        missing.append("username")
+
+    # Si no falta nada → PERFIL COMPLETO
+    if not missing:
+        logger.info(f"[Onboarding] Usuario {user.telegram_id} perfil completo.")
+        await state.clear()
+        return await send_main_menu(message, user)
+
+    # Continuar con el siguiente paso
+    next_step = missing[0]
+    await state.set_state(getattr(Onboarding, next_step))
+
+    prompts = {
+        "name": "👤 ¿Cuál es tu *nombre completo*?",
+        "country": "🌎 ¿De qué *país* eres?",
+        "city": "🏙️ ¿En qué *ciudad* vives?",
+        "document": "🪪 Ingresa tu *documento de identidad*: ",
+        "birthdate": "📅 Ingresa tu *fecha de nacimiento* (AAAA-MM-DD):",
+        "email": "📧 Escribe tu *correo electrónico*: ",
+        "phone": "📱 Ingresa tu *número telefónico*: ",
+        "username": "🏷️ Ingresa tu *username* (debe iniciar con @): ",
+    }
+
+    await message.answer(prompts[next_step], parse_mode="Markdown")
+
