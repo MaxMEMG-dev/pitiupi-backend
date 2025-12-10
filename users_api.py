@@ -137,6 +137,7 @@ def get_user(telegram_id: int):
                 country,
                 city,
                 document_number,
+                balance,
                 created_at,
                 updated_at
             FROM users
