@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # MODELO Pydantic (sanitiza datos vacíos)
 # ============================================================
+
 class UserRegister(BaseModel):
     telegram_id: int
     first_name: str | None = None
@@ -36,6 +37,7 @@ class UserRegister(BaseModel):
 # ============================================================
 # POST /users/register → Registrar o actualizar usuario
 # ============================================================
+
 @router.post("/register")
 def register_user(data: UserRegister):
 
@@ -106,7 +108,7 @@ def register_user(data: UserRegister):
         logger.error(f"❌ Error registrando usuario: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="Error registrando usuario en PostgreSQL"
+            detail=f"Error registrando usuario: {str(e)}"
         )
 
     finally:
@@ -116,6 +118,7 @@ def register_user(data: UserRegister):
 # ============================================================
 # GET /users/{telegram_id} → Obtener usuario desde PostgreSQL
 # ============================================================
+
 @router.get("/{telegram_id}")
 def get_user(telegram_id: int):
 
@@ -154,10 +157,11 @@ def get_user(telegram_id: int):
 
     except Exception as e:
         logger.error(f"❌ Error obteniendo usuario {telegram_id}: {e}", exc_info=True)
-        raise HTTPException(500, "Error interno consultando usuario")
+        raise HTTPException(500, f"Error interno consultando usuario: {str(e)}")
 
     finally:
         conn.close()
+
 
 # ============================================================
 # DELETE /users/{telegram_id} → Eliminar usuario COMPLETO
@@ -173,7 +177,7 @@ def delete_user(telegram_id: int):
 
     try:
         # ----------------------------------------------------
-        # Buscar ID real del usuario en PostgreSQL
+        # Buscar ID interno del usuario en PostgreSQL
         # ----------------------------------------------------
         cursor.execute("SELECT id FROM users WHERE telegram_id = %s LIMIT 1;", (telegram_id,))
         row = cursor.fetchone()
@@ -185,41 +189,45 @@ def delete_user(telegram_id: int):
         user_id = row["id"]
 
         # ----------------------------------------------------
-        # ELIMINAR REGISTROS RELACIONADOS (Orden correcto)
+        # ELIMINAR REGISTROS RELACIONADOS (SOLO TABLAS REALES)
         # ----------------------------------------------------
 
-        # 1. Payment intents (Nuvei)
+        # 1. Intentos de pago (Nuvei)
         cursor.execute("DELETE FROM payment_intents WHERE user_id = %s;", (user_id,))
 
-        # 2. Movimientos o historial
-        cursor.execute("DELETE FROM user_transactions WHERE user_id = %s;", (user_id,))
-
-        # 3. Logs de transacciones
+        # 2. Logs de transacciones reales
         cursor.execute("DELETE FROM transactions_log WHERE user_id = %s;", (user_id,))
 
-        # 4. Retos / apuestas / juegos si existen
-        cursor.execute("DELETE FROM challenges WHERE challenger_id = %s OR opponent_id = %s;", (user_id, user_id))
+        # 3. Challenges (retos)
+        cursor.execute("""
+            DELETE FROM challenges
+            WHERE challenger_id = %s OR opponent_id = %s;
+        """, (user_id, user_id))
 
+        # 4. Torneos (si aplica)
+        cursor.execute("""
+            DELETE FROM tournaments
+            WHERE owner_id = %s;
+        """, (user_id,))
+
+        # ----------------------------------------------------
         # 5. Finalmente eliminar el usuario
+        # ----------------------------------------------------
         cursor.execute("DELETE FROM users WHERE id = %s RETURNING id;", (user_id,))
-        deleted_row = cursor.fetchone()
+        deleted = cursor.fetchone()
 
         conn.commit()
 
-        logger.info(f"✅ Usuario eliminado correctamente: {telegram_id}")
+        if not deleted:
+            return {"success": False, "detail": "No se pudo eliminar el usuario"}
 
+        logger.info(f"✅ Usuario {telegram_id} eliminado exitosamente")
         return {"success": True, "deleted": telegram_id}
 
     except Exception as e:
         conn.rollback()
         logger.error(f"❌ Error eliminando usuario {telegram_id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error eliminando usuario: {str(e)}"
-        )
+        raise HTTPException(500, f"Error eliminando usuario: {str(e)}")
 
     finally:
         conn.close()
-
-
-
