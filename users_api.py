@@ -159,9 +159,8 @@ def get_user(telegram_id: int):
     finally:
         conn.close()
 
-
 # ============================================================
-# DELETE /users/{telegram_id} → Eliminar usuario
+# DELETE /users/{telegram_id} → Eliminar usuario COMPLETO
 # ============================================================
 
 @router.delete("/{telegram_id}")
@@ -173,28 +172,54 @@ def delete_user(telegram_id: int):
     cursor = conn.cursor()
 
     try:
-        # 1. Eliminar transacciones relacionadas (si existen)
-        cursor.execute("DELETE FROM transactions WHERE user_id = (SELECT id FROM users WHERE telegram_id = %s);", (telegram_id,))
+        # ----------------------------------------------------
+        # Buscar ID real del usuario en PostgreSQL
+        # ----------------------------------------------------
+        cursor.execute("SELECT id FROM users WHERE telegram_id = %s LIMIT 1;", (telegram_id,))
+        row = cursor.fetchone()
 
-        # 2. Eliminar usuario
-        cursor.execute("DELETE FROM users WHERE telegram_id = %s RETURNING telegram_id;", (telegram_id,))
-        deleted = cursor.fetchone()
-        
-        conn.commit()
-
-        if not deleted:
-            logger.warning(f"⚠️ Usuario {telegram_id} no existía en PostgreSQL")
+        if not row:
+            logger.warning(f"⚠️ Usuario {telegram_id} no existe en PostgreSQL")
             return {"success": False, "detail": "Usuario no existe"}
 
-        logger.info(f"✅ Usuario {telegram_id} eliminado exitosamente")
+        user_id = row["id"]
+
+        # ----------------------------------------------------
+        # ELIMINAR REGISTROS RELACIONADOS (Orden correcto)
+        # ----------------------------------------------------
+
+        # 1. Payment intents (Nuvei)
+        cursor.execute("DELETE FROM payment_intents WHERE user_id = %s;", (user_id,))
+
+        # 2. Movimientos o historial
+        cursor.execute("DELETE FROM user_transactions WHERE user_id = %s;", (user_id,))
+
+        # 3. Logs de transacciones
+        cursor.execute("DELETE FROM transactions_log WHERE user_id = %s;", (user_id,))
+
+        # 4. Retos / apuestas / juegos si existen
+        cursor.execute("DELETE FROM challenges WHERE challenger_id = %s OR opponent_id = %s;", (user_id, user_id))
+
+        # 5. Finalmente eliminar el usuario
+        cursor.execute("DELETE FROM users WHERE id = %s RETURNING id;", (user_id,))
+        deleted_row = cursor.fetchone()
+
+        conn.commit()
+
+        logger.info(f"✅ Usuario eliminado correctamente: {telegram_id}")
+
         return {"success": True, "deleted": telegram_id}
 
     except Exception as e:
         conn.rollback()
         logger.error(f"❌ Error eliminando usuario {telegram_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error eliminando usuario")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error eliminando usuario: {str(e)}"
+        )
 
     finally:
         conn.close()
+
 
 
