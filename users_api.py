@@ -159,3 +159,42 @@ def get_user(telegram_id: int):
     finally:
         conn.close()
 
+
+# ============================================================
+# DELETE /users/{telegram_id} → Eliminar usuario
+# ============================================================
+
+@router.delete("/{telegram_id}")
+def delete_user(telegram_id: int):
+
+    logger.warning(f"🗑 Eliminando usuario {telegram_id} de PostgreSQL...")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 1. Eliminar transacciones relacionadas (si existen)
+        cursor.execute("DELETE FROM transactions WHERE user_id = (SELECT id FROM users WHERE telegram_id = %s);", (telegram_id,))
+
+        # 2. Eliminar usuario
+        cursor.execute("DELETE FROM users WHERE telegram_id = %s RETURNING telegram_id;", (telegram_id,))
+        deleted = cursor.fetchone()
+        
+        conn.commit()
+
+        if not deleted:
+            logger.warning(f"⚠️ Usuario {telegram_id} no existía en PostgreSQL")
+            return {"success": False, "detail": "Usuario no existe"}
+
+        logger.info(f"✅ Usuario {telegram_id} eliminado exitosamente")
+        return {"success": True, "deleted": telegram_id}
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"❌ Error eliminando usuario {telegram_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error eliminando usuario")
+
+    finally:
+        conn.close()
+
+
