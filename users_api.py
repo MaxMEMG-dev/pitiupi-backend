@@ -8,7 +8,7 @@ from pydantic import BaseModel, validator
 from database import get_connection
 import logging
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(tags=["users"])
 logger = logging.getLogger(__name__)
 
 
