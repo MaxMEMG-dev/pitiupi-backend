@@ -1,6 +1,6 @@
 # ============================================================
 # users_api.py — Gestión de usuarios PostgreSQL (Render)
-# PITIUPI v5.0 — Backend oficial
+# PITIUPI v5.1 — Backend oficial (BALANCE ACTIVADO)
 # ============================================================
 
 from fastapi import APIRouter, HTTPException
@@ -8,7 +8,7 @@ from pydantic import BaseModel, validator
 from database import get_connection
 import logging
 
-router = APIRouter()
+router = APIRouter(prefix="/users", tags=["users"])
 logger = logging.getLogger(__name__)
 
 
@@ -28,20 +28,20 @@ class UserRegister(BaseModel):
 
     @validator("*", pre=True)
     def empty_to_none(cls, v):
-        """Evita insertar cadenas vacías en PostgreSQL."""
+        """Evita insertar strings vacíos en PostgreSQL."""
         if v == "" or v is None:
             return None
         return v
 
 
 # ============================================================
-# POST /users/register → Registrar o actualizar usuario
+# POST /users/register
+# Registrar o actualizar usuario (NO toca balance)
 # ============================================================
 
 @router.post("/register")
 def register_user(data: UserRegister):
-
-    logger.info(f"📥 Recibido registro usuario TelegramID={data.telegram_id}")
+    logger.info(f"📥 Registro usuario TelegramID={data.telegram_id}")
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -71,17 +71,19 @@ def register_user(data: UserRegister):
                 city                = COALESCE(EXCLUDED.city, users.city),
                 document_number     = COALESCE(EXCLUDED.document_number, users.document_number),
                 updated_at          = NOW()
-            RETURNING id,
-                      telegram_id,
-                      telegram_first_name,
-                      telegram_last_name,
-                      email,
-                      phone,
-                      country,
-                      city,
-                      document_number,
-                      created_at,
-                      updated_at;
+            RETURNING
+                id,
+                telegram_id,
+                telegram_first_name AS first_name,
+                telegram_last_name  AS last_name,
+                email,
+                phone,
+                country,
+                city,
+                document_number,
+                balance,
+                created_at,
+                updated_at;
         """, (
             data.telegram_id,
             data.first_name,
@@ -93,35 +95,27 @@ def register_user(data: UserRegister):
             data.document_number
         ))
 
-        user_row = cursor.fetchone()
+        user = cursor.fetchone()
         conn.commit()
 
-        logger.info(f"✅ Usuario sincronizado con éxito: ID={user_row['id']}")
-
-        return {
-            "success": True,
-            "user": user_row
-        }
+        return {"success": True, "user": user}
 
     except Exception as e:
         conn.rollback()
-        logger.error(f"❌ Error registrando usuario: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error registrando usuario: {str(e)}"
-        )
+        logger.error("❌ Error registrando usuario", exc_info=True)
+        raise HTTPException(500, f"Error registrando usuario: {str(e)}")
 
     finally:
         conn.close()
 
 
 # ============================================================
-# GET /users/{telegram_id} → Obtener usuario desde PostgreSQL
+# GET /users/{telegram_id}
+# Obtener usuario + BALANCE REAL
 # ============================================================
 
 @router.get("/{telegram_id}")
 def get_user(telegram_id: int):
-
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -131,7 +125,7 @@ def get_user(telegram_id: int):
                 id,
                 telegram_id,
                 telegram_first_name AS first_name,
-                telegram_last_name AS last_name,
+                telegram_last_name  AS last_name,
                 email,
                 phone,
                 country,
@@ -145,19 +139,18 @@ def get_user(telegram_id: int):
             LIMIT 1;
         """, (telegram_id,))
 
-        row = cursor.fetchone()
+        user = cursor.fetchone()
 
-        if not row:
-            logger.warning(f"⚠️ Usuario {telegram_id} NO encontrado en PostgreSQL")
+        if not user:
             raise HTTPException(404, "Usuario no encontrado")
 
-        return {"success": True, "user": row}
+        return {"success": True, "user": user}
 
     except HTTPException:
         raise
 
     except Exception as e:
-        logger.error(f"❌ Error obteniendo usuario {telegram_id}: {e}", exc_info=True)
+        logger.error("❌ Error obteniendo usuario", exc_info=True)
         raise HTTPException(500, f"Error interno consultando usuario: {str(e)}")
 
     finally:
@@ -165,70 +158,52 @@ def get_user(telegram_id: int):
 
 
 # ============================================================
-# DELETE /users/{telegram_id} → Eliminar usuario COMPLETO
+# DELETE /users/{telegram_id}
+# Eliminar usuario COMPLETO
 # ============================================================
 
 @router.delete("/{telegram_id}")
 def delete_user(telegram_id: int):
-
-    logger.warning(f"🗑 Eliminando usuario {telegram_id} de PostgreSQL...")
+    logger.warning(f"🗑 Eliminando usuario {telegram_id}")
 
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
-        # ----------------------------------------------------
-        # Buscar ID interno del usuario en PostgreSQL
-        # ----------------------------------------------------
-        cursor.execute("SELECT id FROM users WHERE telegram_id = %s LIMIT 1;", (telegram_id,))
+        cursor.execute(
+            "SELECT id FROM users WHERE telegram_id = %s LIMIT 1;",
+            (telegram_id,)
+        )
         row = cursor.fetchone()
 
         if not row:
-            logger.warning(f"⚠️ Usuario {telegram_id} no existe en PostgreSQL")
             return {"success": False, "detail": "Usuario no existe"}
 
         user_id = row["id"]
 
-        # ----------------------------------------------------
-        # ELIMINAR REGISTROS RELACIONADOS (SOLO TABLAS REALES)
-        # ----------------------------------------------------
-
-        # 1. Intentos de pago (Nuvei)
+        # Eliminar dependencias reales
         cursor.execute("DELETE FROM payment_intents WHERE user_id = %s;", (user_id,))
-
-        # 2. Logs de transacciones reales
         cursor.execute("DELETE FROM transactions_log WHERE user_id = %s;", (user_id,))
-
-        # 3. Challenges (retos)
         cursor.execute("""
             DELETE FROM challenges
             WHERE challenger_id = %s OR opponent_id = %s;
         """, (user_id, user_id))
+        cursor.execute("DELETE FROM tournaments WHERE owner_id = %s;", (user_id,))
 
-        # 4. Torneos (si aplica)
-        cursor.execute("""
-            DELETE FROM tournaments
-            WHERE owner_id = %s;
-        """, (user_id,))
-
-        # ----------------------------------------------------
-        # 5. Finalmente eliminar el usuario
-        # ----------------------------------------------------
-        cursor.execute("DELETE FROM users WHERE id = %s RETURNING id;", (user_id,))
-        deleted = cursor.fetchone()
+        # Eliminar usuario
+        cursor.execute(
+            "DELETE FROM users WHERE id = %s RETURNING id;",
+            (user_id,)
+        )
 
         conn.commit()
-
-        if not deleted:
-            return {"success": False, "detail": "No se pudo eliminar el usuario"}
-
-        logger.info(f"✅ Usuario {telegram_id} eliminado exitosamente")
         return {"success": True, "deleted": telegram_id}
 
     except Exception as e:
         conn.rollback()
-        logger.error(f"❌ Error eliminando usuario {telegram_id}: {e}", exc_info=True)
+        logger.error("❌ Error eliminando usuario", exc_info=True)
         raise HTTPException(500, f"Error eliminando usuario: {str(e)}")
 
     finally:
         conn.close()
+
