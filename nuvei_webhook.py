@@ -1,6 +1,6 @@
 # ============================================================
 # nuvei_webhook.py — Callback oficial Nuvei
-# PITIUPI v5.1 — PRODUCCIÓN
+# PITIUPI v5.1 — PRODUCCIÓN (STOKEN CORRECTO + BALANCE)
 # ============================================================
 
 from fastapi import APIRouter, Request
@@ -19,12 +19,20 @@ from payments_core import (
 router = APIRouter(tags=["Nuvei"])
 logger = logging.getLogger(__name__)
 
+# ============================================================
+# VARIABLES DE ENTORNO
+# ============================================================
+
 APP_KEY = os.getenv("NUVEI_APP_KEY_SERVER")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+if not APP_KEY:
+    logger.error("❌ NUVEI_APP_KEY_SERVER NO configurado")
+
 
 # ============================================================
-# STOKEN (según documentación oficial Nuvei)
+# STOKEN — SEGÚN DOCUMENTACIÓN OFICIAL NUVEI
+# MD5(transaction_id_application_code_user_id_app_key)
 # ============================================================
 
 def generate_stoken(
@@ -32,15 +40,12 @@ def generate_stoken(
     application_code: str,
     user_id: str,
 ) -> str:
-    """
-    MD5(transaction_id_application_code_user_id_app_key)
-    """
     raw = f"{transaction_id}_{application_code}_{user_id}_{APP_KEY}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
 # ============================================================
-# Enviar mensaje Telegram
+# ENVÍO DE MENSAJE A TELEGRAM
 # ============================================================
 
 def send_telegram_message(chat_id: int, text: str):
@@ -49,25 +54,25 @@ def send_telegram_message(chat_id: int, text: str):
         return
 
     try:
-        resp = requests.post(
+        response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": chat_id,
                 "text": text,
                 "parse_mode": "HTML",
             },
-            timeout=10
+            timeout=10,
         )
 
-        if resp.status_code != 200:
-            logger.error(f"❌ Telegram error: {resp.text}")
+        if response.status_code != 200:
+            logger.error(f"❌ Error Telegram: {response.text}")
 
     except Exception as e:
-        logger.error(f"❌ Error enviando Telegram: {e}")
+        logger.error(f"❌ Error enviando mensaje Telegram: {e}", exc_info=True)
 
 
 # ============================================================
-# Webhook Nuvei
+# WEBHOOK NUVEI
 # ============================================================
 
 @router.post("/callback")
@@ -79,11 +84,12 @@ async def nuvei_callback(request: Request):
         tx = payload.get("transaction")
         user = payload.get("user", {})
 
-        if not tx or "id" not in tx:
+        if not tx:
+            logger.warning("⚠️ Webhook sin transaction")
             return {"status": "OK"}
 
         # --------------------------------------------------
-        # Extraer campos oficiales
+        # CAMPOS OFICIALES NUVEI
         # --------------------------------------------------
         transaction_id = tx.get("id")
         status = str(tx.get("status"))
@@ -97,14 +103,15 @@ async def nuvei_callback(request: Request):
 
         telegram_id = user.get("id")
 
-        if not intent_id or not telegram_id:
+        if not transaction_id or not intent_id or not telegram_id or not application_code:
+            logger.warning("⚠️ Webhook incompleto — ignorado")
             return {"status": "OK"}
 
         intent_id = int(intent_id)
         telegram_id = int(telegram_id)
 
         # --------------------------------------------------
-        # Validar STOKEN (CRÍTICO)
+        # VALIDAR STOKEN (CRÍTICO)
         # --------------------------------------------------
         sent_stoken = tx.get("stoken")
         expected_stoken = generate_stoken(
@@ -114,32 +121,40 @@ async def nuvei_callback(request: Request):
         )
 
         if sent_stoken != expected_stoken:
-            logger.error("❌ STOKEN inválido")
+            logger.error("❌ STOKEN inválido — webhook rechazado")
             return {"status": "OK"}
 
+        logger.info("✅ STOKEN válido — webhook auténtico")
+
         # --------------------------------------------------
-        # Obtener intent
+        # OBTENER INTENT
         # --------------------------------------------------
         intent = get_payment_intent(intent_id)
         if not intent:
+            logger.error(f"❌ Intent {intent_id} no existe")
             return {"status": "OK"}
 
         # --------------------------------------------------
-        # Guardar order_id si no existe
+        # GUARDAR order_id SI AÚN NO EXISTE
         # --------------------------------------------------
         if order_id and not intent.get("order_id"):
             update_payment_intent(intent_id, order_id=order_id)
 
         # --------------------------------------------------
-        # Idempotencia
+        # IDEMPOTENCIA
         # --------------------------------------------------
         if intent.get("status") == "paid":
+            logger.info(f"🔁 Intent {intent_id} ya procesado")
             return {"status": "OK"}
 
         # --------------------------------------------------
-        # APROBADO → SUMAR BALANCE
+        # PAGO APROBADO
+        # status = 1  | status_detail = 3
         # --------------------------------------------------
         if status == "1" and status_detail == "3":
+            logger.info(f"🟢 Pago aprobado → Intent {intent_id}")
+
+            # 1️⃣ Marcar intent como pagado
             mark_intent_paid(
                 intent_id=intent_id,
                 provider_tx_id=transaction_id,
@@ -148,8 +163,10 @@ async def nuvei_callback(request: Request):
                 message="Pago aprobado por Nuvei",
             )
 
+            # 2️⃣ Actualizar balance del usuario
             new_balance = add_user_balance(telegram_id, amount)
 
+            # 3️⃣ Enviar voucher Telegram
             voucher = (
                 "🎉 <b>PAGO APROBADO</b>\n\n"
                 f"💳 <b>Monto:</b> ${amount:.2f}\n"
@@ -164,10 +181,16 @@ async def nuvei_callback(request: Request):
             send_telegram_message(telegram_id, voucher)
 
         # --------------------------------------------------
-        # CANCELADO
+        # PAGO CANCELADO
         # --------------------------------------------------
         elif status == "2":
             update_payment_intent(intent_id, status="cancelled")
+            logger.info(f"⚠️ Pago cancelado → Intent {intent_id}")
+
+        else:
+            logger.info(
+                f"ℹ️ Webhook ignorado → status={status} detail={status_detail}"
+            )
 
         return {"status": "OK"}
 
