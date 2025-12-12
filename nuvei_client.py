@@ -1,3 +1,8 @@
+# ============================================================
+# nuvei_client.py — 
+# PITIUPI v5.1 — PRODUCCIÓN
+# ============================================================
+
 import base64
 import hashlib
 import time
@@ -137,3 +142,4 @@ class NuveiClient:
             return response.json()
         except Exception:
             return None
+
