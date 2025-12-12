@@ -83,3 +83,4 @@ def stats():
         "payments": "ready",
         "nuvei": "ready",
     }
+
