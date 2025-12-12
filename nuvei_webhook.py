@@ -15,8 +15,7 @@ from payments_core import (
     get_payment_intent,
     add_user_balance,
 )
-
-router = APIRouter(prefix="/nuvei", tags=["Nuvei"])
+router = APIRouter(tags=["Nuvei"])
 logger = logging.getLogger(__name__)
 
 APP_CODE = os.getenv("NUVEI_APP_CODE_SERVER")
@@ -171,3 +170,4 @@ async def nuvei_callback(request: Request):
     except Exception as e:
         logger.error(f"[Nuvei Callback ERROR] {e}", exc_info=True)
         return {"status": "OK"}
+
