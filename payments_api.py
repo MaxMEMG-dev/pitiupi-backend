@@ -129,7 +129,7 @@ def create_payment(req: PaymentCreateRequest):
         # 2️⃣ Crear intent interno
         # ------------------------------------------------------------
         amount = float(req.amount)
-        intent_id = create_payment_intent(req.telegram_id, amount)
+        intent_id = create_payment_intent(req.telegram_id, amount, application_code=APP_CODE)
 
         logger.info(f"📝 Intent interno creado: {intent_id}")
 
