@@ -1,3 +1,7 @@
+# ============================================================
+# database.py — Conexión PostgreSQL + Inicialización
+# ============================================================
+
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
@@ -71,6 +75,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS payment_intents (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
+                telegram_id BIGINT NOT NULL,  -- ← NUEVO: para búsqueda directa
                 amount NUMERIC(10,2) NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'pending',
                 message TEXT,
@@ -82,12 +87,31 @@ def init_db():
                 authorization_code VARCHAR(255),
                 status_detail INTEGER,
                 order_id VARCHAR(255)
+                -- NOTA: No tenemos columna application_code en la tabla
             );
         """)
         logger.info("🟢 Tabla 'payment_intents' verificada/creada")
 
+        # ============================================
+        #   ÍNDICES PARA MEJOR RENDIMIENTO
+        # ============================================
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payment_intents_telegram_id 
+            ON payment_intents(telegram_id);
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payment_intents_order_id 
+            ON payment_intents(order_id);
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payment_intents_status 
+            ON payment_intents(status);
+        """)
+
         conn.commit()
-        logger.info("✅ Base de datos inicializada correctamente (users + payment_intents)")
+        logger.info("✅ Base de datos inicializada correctamente")
 
     except Exception as e:
         logger.error(f"❌ Error inicializando BD: {str(e)}")
