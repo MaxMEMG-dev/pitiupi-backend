@@ -188,6 +188,18 @@ def add_user_balance(telegram_id: int, amount: float):
         conn = get_connection()
         cursor = conn.cursor()
 
+        # PRIMERO: Verificar si existe el usuario con ese telegram_id
+        cursor.execute(
+            "SELECT id FROM users WHERE telegram_id = %s",
+            (telegram_id,)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            logger.error(f"❌ Usuario con telegram_id={telegram_id} no existe")
+            raise ValueError(f"Usuario {telegram_id} no encontrado")
+
+        # SEGUNDO: Actualizar balance
         cursor.execute(
             """
             UPDATE users
@@ -201,12 +213,9 @@ def add_user_balance(telegram_id: int, amount: float):
         row = cursor.fetchone()
         conn.commit()
 
-        if not row:
-            raise RuntimeError(f"Usuario con telegram_id={telegram_id} no encontrado")
-
         new_balance = row["balance"]
         logger.info(
-            f"💰 Balance actualizado | TelegramID={telegram_id} | Nuevo balance=${new_balance:.2f}"
+            f"💰 Balance actualizado | TelegramID={telegram_id} | Nuevo=${new_balance:.2f}"
         )
 
         return float(new_balance)
@@ -214,12 +223,9 @@ def add_user_balance(telegram_id: int, amount: float):
     except Exception as e:
         if conn:
             conn.rollback()
-        logger.error(
-            f"❌ Error actualizando balance para {telegram_id}: {e}",
-            exc_info=True
-        )
+        logger.error(f"❌ Error actualizando balance: {e}")
         raise
-
     finally:
         if conn:
             conn.close()
+
