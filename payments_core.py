@@ -1,6 +1,5 @@
 # =====================================================================
-# payments_core.py — Motor interno de pagos PITIUPI v5.0
-# Maneja intents, actualizaciones, vouchers y registro desde Webhook.
+# payments_core.py — Motor interno de pagos PITIUPI v5.1 (CORREGIDO)
 # =====================================================================
 
 from datetime import datetime
@@ -11,12 +10,17 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# 🟢 CREAR INTENT DE PAGO
+# 🟢 CREAR INTENT DE PAGO (GUARDA application_code)
 # ============================================================
-def create_payment_intent(telegram_id: int, amount: float) -> int:
+def create_payment_intent(
+    telegram_id: int,
+    amount: float,
+    application_code: str,
+) -> int:
     """
     Crea un intent de pago.
-    user_id = TelegramID (no el ID interno del usuario)
+    user_id = TelegramID
+    application_code = NUVEI_APP_CODE_SERVER (CLAVE PARA STOKEN)
     """
     conn = None
     try:
@@ -29,26 +33,35 @@ def create_payment_intent(telegram_id: int, amount: float) -> int:
                 user_id,
                 amount,
                 status,
+                application_code,
                 created_at
             )
-            VALUES (%s, %s, %s, %s)
-            RETURNING id
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id;
             """,
-            (telegram_id, amount, "pending", datetime.now())
+            (
+                telegram_id,
+                amount,
+                "pending",
+                application_code,
+                datetime.utcnow(),
+            )
         )
 
         row = cursor.fetchone()
-        intent_id = row["id"]
-
         conn.commit()
-        logger.info(f"🟢 Intent {intent_id} creado para TelegramID={telegram_id}")
+
+        intent_id = row["id"]
+        logger.info(
+            f"🟢 Intent {intent_id} creado | user={telegram_id} | app={application_code}"
+        )
 
         return intent_id
 
     except Exception as e:
-        logger.error(f"❌ Error creando payment intent: {e}")
         if conn:
             conn.rollback()
+        logger.error(f"❌ Error creando payment intent: {e}", exc_info=True)
         raise
 
     finally:
@@ -56,9 +69,8 @@ def create_payment_intent(telegram_id: int, amount: float) -> int:
             conn.close()
 
 
-
 # ============================================================
-# 🔍 OBTENER INTENT (para voucher del bot)
+# 🔍 OBTENER INTENT (INCLUYE application_code)
 # ============================================================
 def get_payment_intent(intent_id: int):
     conn = None
@@ -68,19 +80,28 @@ def get_payment_intent(intent_id: int):
 
         cursor.execute(
             """
-            SELECT id, user_id, amount, status, order_id, transaction_id,
-                   authorization_code, status_detail, created_at, paid_at
+            SELECT
+                id,
+                user_id,
+                amount,
+                status,
+                order_id,
+                transaction_id,
+                authorization_code,
+                status_detail,
+                application_code,
+                created_at,
+                paid_at
             FROM payment_intents
-            WHERE id = %s
+            WHERE id = %s;
             """,
             (intent_id,)
         )
 
-        row = cursor.fetchone()
-        return row
+        return cursor.fetchone()
 
     except Exception as e:
-        logger.error(f"❌ Error obteniendo intent {intent_id}: {e}")
+        logger.error(f"❌ Error obteniendo intent {intent_id}: {e}", exc_info=True)
         raise
 
     finally:
@@ -88,16 +109,10 @@ def get_payment_intent(intent_id: int):
             conn.close()
 
 
-
 # ============================================================
-# 🔧 ACTUALIZAR CAMPOS DEL INTENT
+# 🔧 ACTUALIZAR INTENT
 # ============================================================
 def update_payment_intent(intent_id: int, **fields):
-    """
-    Actualiza uno o más campos del intent.
-    Ejemplo:
-        update_payment_intent(55, order_id='XYZ', status='waiting')
-    """
     if not fields:
         return
 
@@ -106,20 +121,21 @@ def update_payment_intent(intent_id: int, **fields):
         conn = get_connection()
         cursor = conn.cursor()
 
-        set_clause = ", ".join([f"{k} = %s" for k in fields.keys()])
+        set_clause = ", ".join(f"{k} = %s" for k in fields)
         values = list(fields.values()) + [intent_id]
 
-        query = f"UPDATE payment_intents SET {set_clause} WHERE id = %s"
+        cursor.execute(
+            f"UPDATE payment_intents SET {set_clause} WHERE id = %s;",
+            values,
+        )
 
-        cursor.execute(query, values)
         conn.commit()
-
         logger.info(f"🔵 Intent {intent_id} actualizado → {fields}")
 
     except Exception as e:
-        logger.error(f"❌ Error actualizando intent {intent_id}: {e}")
         if conn:
             conn.rollback()
+        logger.error(f"❌ Error actualizando intent {intent_id}: {e}", exc_info=True)
         raise
 
     finally:
@@ -127,79 +143,75 @@ def update_payment_intent(intent_id: int, **fields):
             conn.close()
 
 
-
 # ============================================================
-# 🟣 MARCAR INTENT COMO PAGADO (WEBHOOK NUVEI)
+# 🟣 MARCAR INTENT COMO PAGADO
 # ============================================================
 def mark_intent_paid(
     intent_id: int,
     provider_tx_id: str,
     status_detail: int,
     authorization_code: str,
-    message: str = None,
+    message: str | None = None,
 ):
-    """
-    Marca el pago como aprobado desde el Webhook Nuvei.
-    Guarda información del voucher.
-    """
-
     fields = {
         "status": "paid",
         "transaction_id": provider_tx_id,
         "status_detail": status_detail,
         "authorization_code": authorization_code,
-        "paid_at": datetime.now(),
+        "paid_at": datetime.utcnow(),
     }
 
     if message:
-        fields["message"] = message  # por si agregas columna message después
+        fields["message"] = message
 
-    try:
-        update_payment_intent(intent_id, **fields)
-        logger.info(f"🟢 Intent {intent_id} APROBADO ✓ proveedor={provider_tx_id}")
+    update_payment_intent(intent_id, **fields)
 
-    except Exception as e:
-        logger.error(
-            f"❌ Error marcando intent {intent_id} como pagado: {e}",
-            exc_info=True
-        )
-        raise
+    logger.info(
+        f"🟢 Intent {intent_id} APROBADO ✓ tx={provider_tx_id}"
+    )
+
 
 # ============================================================
-# 🟣 INCREMENTA EL BALANCE (ACTUALIZA)
+# 💰 SUMAR BALANCE (REQUIERE users.balance)
 # ============================================================
-def add_user_balance(user_id: int, amount: float):
-    """
-    Suma el monto al balance actual del usuario.
-    """
+def add_user_balance(telegram_id: int, amount: float):
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
-            UPDATE users 
+        cursor.execute(
+            """
+            UPDATE users
             SET balance = COALESCE(balance, 0) + %s
             WHERE telegram_id = %s
             RETURNING balance;
-        """, (amount, user_id))
+            """,
+            (amount, telegram_id)
+        )
 
         row = cursor.fetchone()
         conn.commit()
 
-        new_balance = row["balance"] if row else None
-        logger.info(f"💰 Balance actualizado para user {user_id}: {new_balance}")
+        if not row:
+            raise RuntimeError("Usuario no encontrado al actualizar balance")
+
+        new_balance = row["balance"]
+        logger.info(
+            f"💰 Balance actualizado | user={telegram_id} | balance={new_balance}"
+        )
 
         return new_balance
 
     except Exception as e:
-        logger.error(f"❌ Error actualizando balance para {user_id}: {e}")
         if conn:
             conn.rollback()
+        logger.error(
+            f"❌ Error actualizando balance para {telegram_id}: {e}",
+            exc_info=True
+        )
         raise
 
     finally:
         if conn:
             conn.close()
-
-
