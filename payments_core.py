@@ -1,5 +1,5 @@
 # =====================================================================
-# payments_core.py — Motor interno de pagos PITIUPI v5.1 (CORREGIDO)
+# payments_core.py — Motor interno de pagos PITIUPI v5.1 (SIMPLIFICADO)
 # =====================================================================
 
 from datetime import datetime
@@ -10,40 +10,47 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# 🟢 CREAR INTENT DE PAGO (GUARDA application_code)
+# 🟢 CREAR INTENT DE PAGO
 # ============================================================
 def create_payment_intent(
     telegram_id: int,
     amount: float,
-    application_code: str,
 ) -> int:
     """
     Crea un intent de pago.
-    user_id = TelegramID
-    application_code = NUVEI_APP_CODE_SERVER (CLAVE PARA STOKEN)
+    Ahora guardamos telegram_id duplicado para búsquedas rápidas.
     """
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
 
+        # Primero obtener el user_id real (si existe)
+        cursor.execute(
+            "SELECT id FROM users WHERE telegram_id = %s LIMIT 1",
+            (telegram_id,)
+        )
+        user = cursor.fetchone()
+        
+        user_id = user["id"] if user else telegram_id  # Fallback al telegram_id
+
         cursor.execute(
             """
             INSERT INTO payment_intents (
                 user_id,
+                telegram_id,
                 amount,
                 status,
-                application_code,
                 created_at
             )
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id;
             """,
             (
+                user_id,
                 telegram_id,
                 amount,
                 "pending",
-                application_code,
                 datetime.utcnow(),
             )
         )
@@ -53,7 +60,7 @@ def create_payment_intent(
 
         intent_id = row["id"]
         logger.info(
-            f"🟢 Intent {intent_id} creado | user={telegram_id} | app={application_code}"
+            f"🟢 Intent {intent_id} creado | TelegramID={telegram_id}"
         )
 
         return intent_id
@@ -70,7 +77,7 @@ def create_payment_intent(
 
 
 # ============================================================
-# 🔍 OBTENER INTENT (INCLUYE application_code)
+# 🔍 OBTENER INTENT
 # ============================================================
 def get_payment_intent(intent_id: int):
     conn = None
@@ -83,15 +90,16 @@ def get_payment_intent(intent_id: int):
             SELECT
                 id,
                 user_id,
+                telegram_id,
                 amount,
                 status,
                 order_id,
                 transaction_id,
                 authorization_code,
                 status_detail,
-                application_code,
                 created_at,
-                paid_at
+                paid_at,
+                message
             FROM payment_intents
             WHERE id = %s;
             """,
@@ -172,7 +180,7 @@ def mark_intent_paid(
 
 
 # ============================================================
-# 💰 SUMAR BALANCE (REQUIERE users.balance)
+# 💰 SUMAR BALANCE
 # ============================================================
 def add_user_balance(telegram_id: int, amount: float):
     conn = None
@@ -194,14 +202,14 @@ def add_user_balance(telegram_id: int, amount: float):
         conn.commit()
 
         if not row:
-            raise RuntimeError("Usuario no encontrado al actualizar balance")
+            raise RuntimeError(f"Usuario con telegram_id={telegram_id} no encontrado")
 
         new_balance = row["balance"]
         logger.info(
-            f"💰 Balance actualizado | user={telegram_id} | balance={new_balance}"
+            f"💰 Balance actualizado | TelegramID={telegram_id} | Nuevo balance=${new_balance:.2f}"
         )
 
-        return new_balance
+        return float(new_balance)
 
     except Exception as e:
         if conn:
