@@ -16,32 +16,36 @@ from payments_core import (
     add_user_balance,
 )
 
-router = APIRouter(tags=["Nuvei"])
+router = APIRouter(prefix="/nuvei", tags=["Nuvei"])
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# VARIABLES DE ENTORNO
+# VARIABLES DE ENTORNO (CRÍTICAS)
 # ============================================================
 
+APP_CODE = os.getenv("NUVEI_APP_CODE_SERVER")
 APP_KEY = os.getenv("NUVEI_APP_KEY_SERVER")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-if not APP_KEY:
-    logger.error("❌ NUVEI_APP_KEY_SERVER NO configurado")
+if not APP_CODE or not APP_KEY:
+    logger.error("❌ NUVEI_APP_CODE_SERVER o NUVEI_APP_KEY_SERVER NO configurados")
 
 
 # ============================================================
-# STOKEN — SEGÚN DOCUMENTACIÓN OFICIAL NUVEI
-# MD5(transaction_id_application_code_user_id_app_key)
+# STOKEN — LINKTOPAY (OFICIAL)
+# MD5(transaction_id + "_" + APP_CODE + "_" + user_id + "_" + APP_KEY)
 # ============================================================
 
-def generate_stoken(
-    transaction_id: str,
-    application_code: str,
-    user_id: str,
-) -> str:
-    raw = f"{transaction_id}_{application_code}_{user_id}_{APP_KEY}"
-    return hashlib.md5(raw.encode()).hexdigest()
+def generate_stoken(transaction_id: str, user_id: str) -> str:
+    raw = f"{transaction_id}_{APP_CODE}_{user_id}_{APP_KEY}"
+    stoken = hashlib.md5(raw.encode()).hexdigest()
+
+    # Logs de auditoría (clave para debugging)
+    logger.info("🔐 STOKEN DEBUG")
+    logger.info(f"RAW      : {raw}")
+    logger.info(f"EXPECTED : {stoken}")
+
+    return stoken
 
 
 # ============================================================
@@ -54,7 +58,7 @@ def send_telegram_message(chat_id: int, text: str):
         return
 
     try:
-        response = requests.post(
+        resp = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": chat_id,
@@ -64,11 +68,11 @@ def send_telegram_message(chat_id: int, text: str):
             timeout=10,
         )
 
-        if response.status_code != 200:
-            logger.error(f"❌ Error Telegram: {response.text}")
+        if resp.status_code != 200:
+            logger.error(f"❌ Error Telegram: {resp.text}")
 
     except Exception as e:
-        logger.error(f"❌ Error enviando mensaje Telegram: {e}", exc_info=True)
+        logger.error("❌ Error enviando mensaje Telegram", exc_info=True)
 
 
 # ============================================================
@@ -79,7 +83,7 @@ def send_telegram_message(chat_id: int, text: str):
 async def nuvei_callback(request: Request):
     try:
         payload = await request.json()
-        logger.info(f"📥 [Nuvei] Webhook recibido")
+        logger.info("📥 [Nuvei] Webhook recibido")
 
         tx = payload.get("transaction")
         user = payload.get("user", {})
@@ -95,20 +99,19 @@ async def nuvei_callback(request: Request):
         status = str(tx.get("status"))
         status_detail = str(tx.get("status_detail"))
         intent_id = tx.get("dev_reference")
-        application_code = tx.get("application_code")
         order_id = tx.get("ltp_id")
         authorization_code = tx.get("authorization_code")
         paid_date = tx.get("paid_date")
         amount = float(tx.get("amount", 0))
 
-        telegram_id = user.get("id")
+        telegram_id = user.get("id")  # STRING según Nuvei
 
-        if not transaction_id or not intent_id or not telegram_id or not application_code:
+        if not transaction_id or not intent_id or not telegram_id:
             logger.warning("⚠️ Webhook incompleto — ignorado")
             return {"status": "OK"}
 
         intent_id = int(intent_id)
-        telegram_id = int(telegram_id)
+        telegram_id_int = int(telegram_id)
 
         # --------------------------------------------------
         # VALIDAR STOKEN (CRÍTICO)
@@ -116,13 +119,14 @@ async def nuvei_callback(request: Request):
         sent_stoken = tx.get("stoken")
         expected_stoken = generate_stoken(
             transaction_id=transaction_id,
-            application_code=application_code,
             user_id=str(telegram_id),
         )
 
+        logger.info(f"STOKEN RECIBIDO : {sent_stoken}")
+
         if sent_stoken != expected_stoken:
             logger.error("❌ STOKEN inválido — webhook rechazado")
-            return {"status": "OK"}
+            return {"status": "token error"}, 203
 
         logger.info("✅ STOKEN válido — webhook auténtico")
 
@@ -135,7 +139,7 @@ async def nuvei_callback(request: Request):
             return {"status": "OK"}
 
         # --------------------------------------------------
-        # GUARDAR order_id SI AÚN NO EXISTE
+        # GUARDAR order_id SI NO EXISTE
         # --------------------------------------------------
         if order_id and not intent.get("order_id"):
             update_payment_intent(intent_id, order_id=order_id)
@@ -149,7 +153,7 @@ async def nuvei_callback(request: Request):
 
         # --------------------------------------------------
         # PAGO APROBADO
-        # status = 1  | status_detail = 3
+        # status = 1 | status_detail = 3
         # --------------------------------------------------
         if status == "1" and status_detail == "3":
             logger.info(f"🟢 Pago aprobado → Intent {intent_id}")
@@ -163,8 +167,8 @@ async def nuvei_callback(request: Request):
                 message="Pago aprobado por Nuvei",
             )
 
-            # 2️⃣ Actualizar balance del usuario
-            new_balance = add_user_balance(telegram_id, amount)
+            # 2️⃣ Actualizar balance
+            new_balance = add_user_balance(telegram_id_int, amount)
 
             # 3️⃣ Enviar voucher Telegram
             voucher = (
@@ -178,7 +182,7 @@ async def nuvei_callback(request: Request):
                 "Gracias por usar <b>PITIUPI</b> 🚀"
             )
 
-            send_telegram_message(telegram_id, voucher)
+            send_telegram_message(telegram_id_int, voucher)
 
         # --------------------------------------------------
         # PAGO CANCELADO
@@ -194,6 +198,6 @@ async def nuvei_callback(request: Request):
 
         return {"status": "OK"}
 
-    except Exception as e:
-        logger.error(f"[Nuvei Callback ERROR] {e}", exc_info=True)
+    except Exception:
+        logger.error("❌ Error crítico en webhook Nuvei", exc_info=True)
         return {"status": "OK"}
