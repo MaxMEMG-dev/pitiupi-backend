@@ -79,17 +79,16 @@ def send_telegram_message(chat_id: int, text: str):
 
 
 # ============================================================
-# WEBHOOK NUVEI (SIMPLIFICADO Y ROBUSTO)
+# WEBHOOK NUVEI (CORREGIDO)
 # ============================================================
 @router.post("/callback")
 async def nuvei_callback(request: Request):
     try:
         # 1️⃣ Obtener payload
         payload = await request.json()
-        logger.info("📥 Webhook Nuvei recibido")
+        logger.info(f"📥 Webhook Nuvei recibido: {payload}")
         
-        tx = payload.get("transaction")
-        user = payload.get("user", {})
+        tx = payload.get("transaction", {})
         
         if not tx:
             logger.warning("⚠️ Sin transaction en webhook")
@@ -99,26 +98,47 @@ async def nuvei_callback(request: Request):
         transaction_id = tx.get("id")
         status = str(tx.get("status", ""))
         status_detail = str(tx.get("status_detail", ""))
-        intent_id = tx.get("dev_reference")
+        intent_id_str = tx.get("dev_reference")  # Este es nuestro intent_id
         application_code = tx.get("application_code")
         amount = float(tx.get("amount", 0))
-        telegram_id = user.get("id")  # ¡String!
+        
+        logger.info(f"🔍 Datos recibidos:")
+        logger.info(f"  - transaction_id: {transaction_id}")
+        logger.info(f"  - intent_id: {intent_id_str}")
+        logger.info(f"  - application_code: {application_code}")
+        logger.info(f"  - status: {status}/{status_detail}")
+        logger.info(f"  - amount: ${amount:.2f}")
         
         # 3️⃣ Validar campos obligatorios
-        if not all([transaction_id, intent_id, telegram_id, application_code]):
+        if not all([transaction_id, intent_id_str, application_code]):
             logger.warning("⚠️ Webhook incompleto")
             return {"status": "OK"}
         
-        # 4️⃣ Validar STOKEN
+        # 4️⃣ Convertir intent_id a int
+        try:
+            intent_id_int = int(intent_id_str)
+        except ValueError:
+            logger.error(f"❌ intent_id no es numérico: {intent_id_str}")
+            return {"status": "OK"}
+        
+        # 5️⃣ Obtener intent DE LA BASE DE DATOS (aquí obtenemos el telegram_id)
+        intent = get_payment_intent(intent_id_int)
+        if not intent:
+            logger.error(f"❌ Intent {intent_id_int} no existe en BD")
+            return {"status": "OK"}
+        
+        telegram_id_int = intent.get("telegram_id")
+        
+        # 6️⃣ Validar STOKEN CORREGIDO (usamos telegram_id de la BD)
         sent_stoken = tx.get("stoken")
         expected_stoken = generate_stoken(
             transaction_id=transaction_id,
             application_code=application_code,
-            user_id=str(telegram_id),
+            user_id=str(telegram_id_int),  # ← ¡Importante! De la BD, no del payload
             app_key=APP_KEY
         )
         
-        logger.info(f"🔍 STOKEN comparación:")
+        logger.info(f"🔑 STOKEN comparación:")
         logger.info(f"   Recibido: {sent_stoken}")
         logger.info(f"   Esperado: {expected_stoken}")
         
@@ -127,19 +147,6 @@ async def nuvei_callback(request: Request):
             raise HTTPException(status_code=203, detail="Token error")
         
         logger.info("✅ STOKEN válido")
-        
-        # 5️⃣ Convertir intent_id a int
-        try:
-            intent_id_int = int(intent_id)
-        except ValueError:
-            logger.error(f"❌ intent_id no es numérico: {intent_id}")
-            return {"status": "OK"}
-        
-        # 6️⃣ Obtener intent
-        intent = get_payment_intent(intent_id_int)
-        if not intent:
-            logger.error(f"❌ Intent {intent_id_int} no existe")
-            return {"status": "OK"}
         
         # 7️⃣ Idempotencia
         if intent.get("status") == "paid":
@@ -168,7 +175,6 @@ async def nuvei_callback(request: Request):
             
             # Sumar balance
             try:
-                telegram_id_int = int(telegram_id)
                 new_balance = add_user_balance(telegram_id_int, amount)
                 
                 # Enviar notificación
@@ -200,8 +206,7 @@ async def nuvei_callback(request: Request):
     except Exception as e:
         logger.error(f"❌ Error en webhook: {e}", exc_info=True)
         return {"status": "OK"}
-
-
+        
 # ============================================================
 # ENDPOINT DE SALUD
 # ============================================================
@@ -213,3 +218,4 @@ async def health_check():
         "app_key_configured": bool(APP_KEY),
         "timestamp": datetime.now().isoformat()
     }
+
