@@ -1,9 +1,10 @@
 # ============================================================
 # nuvei_webhook.py — Callback oficial Nuvei
-# PITIUPI v5.1 — PRODUCCIÓN (STOKEN CORRECTO + BALANCE)
+# PITIUPI v5.1 — PRODUCCIÓN
+# STOKEN CORRECTO + UPDATE BALANCE
 # ============================================================
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 import hashlib
 import logging
 import os
@@ -23,27 +24,31 @@ logger = logging.getLogger(__name__)
 # VARIABLES DE ENTORNO (CRÍTICAS)
 # ============================================================
 
-APP_CODE = os.getenv("NUVEI_APP_CODE_SERVER")
 APP_KEY = os.getenv("NUVEI_APP_KEY_SERVER")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-if not APP_CODE or not APP_KEY:
-    logger.error("❌ NUVEI_APP_CODE_SERVER o NUVEI_APP_KEY_SERVER NO configurados")
+if not APP_KEY:
+    logger.critical("❌ NUVEI_APP_KEY_SERVER NO configurado")
 
 
 # ============================================================
-# STOKEN — LINKTOPAY (OFICIAL)
-# MD5(transaction_id + "_" + APP_CODE + "_" + user_id + "_" + APP_KEY)
+# STOKEN — SEGÚN DOCUMENTACIÓN OFICIAL NUVEI
+# MD5(transaction_id_application_code_user_id_app_key)
+# ⚠️ application_code VIENE DEL WEBHOOK, NO DEL ENV
 # ============================================================
 
-def generate_stoken(transaction_id: str, user_id: str) -> str:
-    raw = f"{transaction_id}_{APP_CODE}_{user_id}_{APP_KEY}"
+def generate_stoken(
+    transaction_id: str,
+    application_code: str,
+    user_id: str,
+) -> str:
+    raw = f"{transaction_id}_{application_code}_{user_id}_{APP_KEY}"
     stoken = hashlib.md5(raw.encode()).hexdigest()
 
-    # Logs de auditoría (clave para debugging)
+    # 🔍 LOGS DE AUDITORÍA (OBLIGATORIOS)
     logger.info("🔐 STOKEN DEBUG")
-    logger.info(f"RAW      : {raw}")
-    logger.info(f"EXPECTED : {stoken}")
+    logger.info(f"RAW STRING        : {raw}")
+    logger.info(f"STOKEN CALCULADO  : {stoken}")
 
     return stoken
 
@@ -69,9 +74,9 @@ def send_telegram_message(chat_id: int, text: str):
         )
 
         if resp.status_code != 200:
-            logger.error(f"❌ Error Telegram: {resp.text}")
+            logger.error(f"❌ Error Telegram API: {resp.text}")
 
-    except Exception as e:
+    except Exception:
         logger.error("❌ Error enviando mensaje Telegram", exc_info=True)
 
 
@@ -84,13 +89,14 @@ async def nuvei_callback(request: Request):
     try:
         payload = await request.json()
         logger.info("📥 [Nuvei] Webhook recibido")
+        logger.debug(payload)
 
         tx = payload.get("transaction")
         user = payload.get("user", {})
 
         if not tx:
             logger.warning("⚠️ Webhook sin transaction")
-            return {"status": "OK"}
+            return Response(status_code=200)
 
         # --------------------------------------------------
         # CAMPOS OFICIALES NUVEI
@@ -99,34 +105,43 @@ async def nuvei_callback(request: Request):
         status = str(tx.get("status"))
         status_detail = str(tx.get("status_detail"))
         intent_id = tx.get("dev_reference")
+        application_code = tx.get("application_code")
         order_id = tx.get("ltp_id")
         authorization_code = tx.get("authorization_code")
         paid_date = tx.get("paid_date")
         amount = float(tx.get("amount", 0))
 
-        telegram_id = user.get("id")  # STRING según Nuvei
+        telegram_id = user.get("id")  # ⚠️ STRING
 
-        if not transaction_id or not intent_id or not telegram_id:
+        logger.info(
+            f"📋 TX={transaction_id} | APP={application_code} | USER={telegram_id} | INTENT={intent_id}"
+        )
+
+        if not all([transaction_id, application_code, intent_id, telegram_id]):
             logger.warning("⚠️ Webhook incompleto — ignorado")
-            return {"status": "OK"}
+            return Response(status_code=200)
 
         intent_id = int(intent_id)
         telegram_id_int = int(telegram_id)
 
         # --------------------------------------------------
-        # VALIDAR STOKEN (CRÍTICO)
+        # VALIDACIÓN STOKEN (CRÍTICA)
         # --------------------------------------------------
         sent_stoken = tx.get("stoken")
+
         expected_stoken = generate_stoken(
             transaction_id=transaction_id,
-            user_id=str(telegram_id),
+            application_code=application_code,
+            user_id=str(telegram_id),  # ⚠️ STRING
         )
 
-        logger.info(f"STOKEN RECIBIDO : {sent_stoken}")
+        logger.info(f"STOKEN RECIBIDO   : {sent_stoken}")
+        logger.info(f"STOKEN ESPERADO   : {expected_stoken}")
 
         if sent_stoken != expected_stoken:
             logger.error("❌ STOKEN inválido — webhook rechazado")
-            return {"status": "token error"}, 203
+            # ⚠️ 203 = token error → Nuvei REINTENTA
+            return Response(status_code=203)
 
         logger.info("✅ STOKEN válido — webhook auténtico")
 
@@ -136,7 +151,7 @@ async def nuvei_callback(request: Request):
         intent = get_payment_intent(intent_id)
         if not intent:
             logger.error(f"❌ Intent {intent_id} no existe")
-            return {"status": "OK"}
+            return Response(status_code=200)
 
         # --------------------------------------------------
         # GUARDAR order_id SI NO EXISTE
@@ -149,7 +164,7 @@ async def nuvei_callback(request: Request):
         # --------------------------------------------------
         if intent.get("status") == "paid":
             logger.info(f"🔁 Intent {intent_id} ya procesado")
-            return {"status": "OK"}
+            return Response(status_code=200)
 
         # --------------------------------------------------
         # PAGO APROBADO
@@ -196,8 +211,8 @@ async def nuvei_callback(request: Request):
                 f"ℹ️ Webhook ignorado → status={status} detail={status_detail}"
             )
 
-        return {"status": "OK"}
+        return Response(status_code=200)
 
     except Exception:
-        logger.error("❌ Error crítico en webhook Nuvei", exc_info=True)
-        return {"status": "OK"}
+        logger.critical("❌ ERROR CRÍTICO EN WEBHOOK NUVEI", exc_info=True)
+        return Response(status_code=200)
