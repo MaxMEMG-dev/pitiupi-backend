@@ -13,6 +13,7 @@ from nuvei_webhook import router as nuvei_router
 
 # Inicialización de base de datos
 from database import init_db
+from emergency_fix import router as emergency_router
 
 
 # ============================================================
@@ -47,6 +48,7 @@ init_db()
 app.include_router(users_router, prefix="/users", tags=["Users"])
 app.include_router(payments_router, prefix="/payments", tags=["Payments"])
 app.include_router(nuvei_router, prefix="/nuvei", tags=["Nuvei"])
+app.include_router(emergency_router, prefix="/emergency", tags=["Emergency"])
 
 
 # ============================================================
@@ -118,3 +120,4 @@ def migrate_data():
         
     except Exception as e:
         return {"error": str(e)}
+
