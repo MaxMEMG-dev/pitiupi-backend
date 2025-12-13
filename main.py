@@ -85,3 +85,36 @@ def stats():
     }
 
 
+# Agrega esto al final de main.py o crea un archivo migrate_api.py
+
+from fastapi import APIRouter
+import subprocess
+import sys
+
+router = APIRouter(tags=["Migration"])
+
+@router.post("/migrate-data")
+def migrate_data():
+    """Endpoint para ejecutar migración (protegido por password)"""
+    
+    # Proteger con variable de entorno
+    migration_key = os.getenv("MIGRATION_KEY", "")
+    if not migration_key:
+        return {"error": "Migration not configured"}
+    
+    try:
+        # Ejecutar el script
+        result = subprocess.run(
+            [sys.executable, "migrate_data.py"],
+            capture_output=True,
+            text=True
+        )
+        
+        return {
+            "success": result.returncode == 0,
+            "stdout": result.stdout,
+            "stderr": result.stderr
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
