@@ -13,7 +13,7 @@ from nuvei_webhook import router as nuvei_router
 
 # Inicialización de base de datos
 from database import init_db
-from emergency_fix import router as emergency_router
+from emergency_fix_corrected import router as emergency_router
 
 
 # ============================================================
@@ -120,4 +120,5 @@ def migrate_data():
         
     except Exception as e:
         return {"error": str(e)}
+
 
