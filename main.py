@@ -426,6 +426,61 @@ app = FastAPI(
     lifespan=lifespan  # <-- ¡IMPORTANTE! Activa el verificador automático
 )
 
+
+# ============================================================
+# MIDDLEWARE DE SEGURIDAD INTERNA (BOT ↔ BACKEND)
+# ============================================================
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
+
+if not INTERNAL_API_KEY:
+    logger.warning("⚠️ INTERNAL_API_KEY no configurada — backend sin protección interna")
+
+
+@app.middleware("http")
+async def internal_api_key_middleware(request: Request, call_next):
+    """
+    Protege endpoints internos contra Cloudflare / tráfico externo.
+    El bot debe enviar el header X-Internal-Key.
+    """
+
+    # Endpoints públicos (NO protegidos)
+    PUBLIC_PATHS = [
+        "/", 
+        "/stats",
+        "/quick-check",
+        "/debug/nuvei",
+        "/nuvei",          # webhooks
+        "/docs",
+        "/openapi.json",
+    ]
+
+    path = request.url.path
+
+    # Permitir rutas públicas
+    if any(path.startswith(p) for p in PUBLIC_PATHS):
+        return await call_next(request)
+
+    # Validar API KEY
+    header_key = request.headers.get("X-Internal-Key")
+
+    if not header_key or header_key != INTERNAL_API_KEY:
+        logger.warning(f"🚫 Acceso interno rechazado a {path}")
+        return JSONResponse(
+            status_code=403,
+            content={
+                "success": False,
+                "error": "FORBIDDEN",
+                "message": "Invalid or missing internal API key",
+            },
+        )
+
+    return await call_next(request)
+
+
 # ============================================================
 # CORS — Permitir llamadas desde el bot
 # ============================================================
@@ -554,3 +609,4 @@ def quick_check():
     finally:
         if conn:
             conn.close()
+
