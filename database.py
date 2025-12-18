@@ -1,122 +1,144 @@
 # ============================================================
-# database.py — Conexión PostgreSQL + Inicialización
+# database.py — Conexión PostgreSQL + Inicialización (BACKEND)
+# PITIUPI v5.x — Backend estable compatible con BOT
 # ============================================================
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
 import os
 import logging
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 logger = logging.getLogger(__name__)
 
-# ================================
-#  DATABASE URL (Render PostgreSQL)
-# ================================
+# ============================================================
+# DATABASE URL (Render PostgreSQL)
+# ============================================================
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
     raise RuntimeError("❌ ERROR: DATABASE_URL no está definida en variables de entorno")
 
 
-# ================================
-#  Obtener conexión PostgreSQL
-# ================================
+# ============================================================
+# Conexión PostgreSQL centralizada
+# ============================================================
+
 def get_connection():
-    """Conexión centralizada a PostgreSQL para todo el backend."""
+    """
+    Devuelve una conexión PostgreSQL con cursor dict.
+    El backend NO gestiona sesiones persistentes.
+    """
     try:
         conn = psycopg2.connect(
             DATABASE_URL,
             cursor_factory=RealDictCursor
         )
-        logger.debug("🔗 Conexión PostgreSQL establecida")
         return conn
     except Exception as e:
         logger.error(f"❌ No se pudo conectar a PostgreSQL: {e}")
         raise
 
 
-# ================================
-#  Inicializar Base de Datos
-# ================================
+# ============================================================
+# Inicialización de Base de Datos (SAFE MODE)
+# ============================================================
+
 def init_db():
+    """
+    Inicializa SOLO las tablas mínimas necesarias para el backend.
+    Compatible con el esquema del bot.
+    NO rompe si la DB ya existe.
+    """
     conn = None
+
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        logger.info("🔗 Conexión con PostgreSQL establecida correctamente")
+        logger.info("🔗 Conexión PostgreSQL establecida")
 
-        # ============================================
-        #   TABLA USERS  (USUARIOS REGISTRADOS DEL BOT)
-        # ============================================
+        # ====================================================
+        # TABLA USERS (alineada con BOT)
+        # ====================================================
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 telegram_id BIGINT UNIQUE NOT NULL,
 
+                telegram_username VARCHAR(100),
                 telegram_first_name VARCHAR(100),
                 telegram_last_name VARCHAR(100),
+
                 email VARCHAR(200),
                 phone VARCHAR(50),
 
                 country VARCHAR(100),
                 city VARCHAR(100),
                 document_number VARCHAR(50),
-                balance NUMERIC(10,2) DEFAULT 0.00,
 
-                created_at TIMESTAMP DEFAULT NOW()
+                balance NUMERIC(12,2) DEFAULT 0.00,
+
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
         """)
-        logger.info("🟢 Tabla 'users' verificada/creada")
+        logger.info("🟢 Tabla 'users' verificada")
 
-        # ============================================
-        #   TABLA PAYMENT INTENTS  (INTENTOS DE PAGO)
-        # ============================================
+        # ====================================================
+        # TABLA PAYMENT INTENTS (Nuvei)
+        # ====================================================
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS payment_intents (
                 id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                telegram_id BIGINT NOT NULL,  -- ← NUEVO: para búsqueda directa
-                amount NUMERIC(10,2) NOT NULL,
+
+                user_id INTEGER,
+                telegram_id BIGINT NOT NULL,
+
+                amount NUMERIC(12,2) NOT NULL,
                 status VARCHAR(20) NOT NULL DEFAULT 'pending',
                 message TEXT,
+
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 paid_at TIMESTAMP NULL,
 
-                -- Datos específicos Nuvei
                 transaction_id VARCHAR(255),
                 authorization_code VARCHAR(255),
                 status_detail INTEGER,
                 order_id VARCHAR(255)
-                -- NOTA: No tenemos columna application_code en la tabla
             );
         """)
-        logger.info("🟢 Tabla 'payment_intents' verificada/creada")
+        logger.info("🟢 Tabla 'payment_intents' verificada")
 
-        # ============================================
-        #   ÍNDICES PARA MEJOR RENDIMIENTO
-        # ============================================
+        # ====================================================
+        # ÍNDICES (seguros, idempotentes)
+        # ====================================================
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_payment_intents_telegram_id 
+            CREATE INDEX IF NOT EXISTS idx_users_telegram_id
+            ON users(telegram_id);
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payment_intents_telegram_id
             ON payment_intents(telegram_id);
         """)
-        
+
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_payment_intents_order_id 
+            CREATE INDEX IF NOT EXISTS idx_payment_intents_order_id
             ON payment_intents(order_id);
         """)
-        
+
         cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_payment_intents_status 
+            CREATE INDEX IF NOT EXISTS idx_payment_intents_status
             ON payment_intents(status);
         """)
 
         conn.commit()
-        logger.info("✅ Base de datos inicializada correctamente")
+        logger.info("✅ Base de datos inicializada correctamente (backend)")
 
     except Exception as e:
-        logger.error(f"❌ Error inicializando BD: {str(e)}")
         if conn:
             conn.rollback()
+        logger.error("❌ Error inicializando BD", exc_info=True)
         raise
 
     finally:
