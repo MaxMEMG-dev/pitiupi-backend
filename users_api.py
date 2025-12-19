@@ -45,7 +45,7 @@ class UserRegister(BaseModel):
     last_name: Optional[str] = Field(None, max_length=100)
     email: Optional[str] = Field(None, max_length=255)
     phone: Optional[str] = Field(None, max_length=20)
-    country: Optional[str] = Field(None, max_length=3)
+    country: Optional[str] = Field(None, max_length=10)
     city: Optional[str] = Field(None, max_length=100)
     document_number: Optional[str] = Field(None, max_length=50)
 
