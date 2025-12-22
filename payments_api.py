@@ -3,7 +3,8 @@
 # PITIUPI v6.0 — Backend Nuvei (delegación a bot backend)
 # ============================================================
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 import os
 import logging
@@ -72,11 +73,7 @@ class PaymentCreateResponse(BaseModel):
 
 def call_bot_backend_create_intent(telegram_id: int, amount: float) -> dict:
     url = f"{BOT_BACKEND_URL}/internal/payments/create_intent"
-
-    payload = {
-        "telegram_id": telegram_id,
-        "amount": amount,
-    }
+    payload = {"telegram_id": telegram_id, "amount": amount}
 
     try:
         resp = requests.post(
@@ -85,52 +82,49 @@ def call_bot_backend_create_intent(telegram_id: int, amount: float) -> dict:
             headers=_internal_headers(),
             timeout=15,
         )
-
         if resp.status_code == 200:
             return {"success": True, "data": resp.json()}
-
-        if resp.status_code in (400, 404):
-            return {
-                "success": False,
-                "error": resp.json().get("detail", "Error del bot backend"),
-                "status_code": resp.status_code,
-            }
-
-        logger.error(f"❌ Bot backend error {resp.status_code}: {resp.text[:200]}")
-        return {"success": False, "error": "Error del bot backend", "status_code": 502}
-
-    except requests.exceptions.Timeout:
-        return {"success": False, "error": "Timeout al bot backend", "status_code": 504}
-
+        
+        return {"success": False, "error": resp.text, "status_code": resp.status_code}
     except Exception as e:
-        logger.error(f"❌ Error llamando al bot backend: {e}", exc_info=True)
-        return {"success": False, "error": "Error interno", "status_code": 500}
+        logger.error(f"❌ Error llamando al bot backend: {e}")
+        return {"success": False, "error": str(e), "status_code": 500}
 
 
 def call_bot_backend_update_intent(intent_uuid: str, order_id: str, payment_url: str) -> None:
     url = f"{BOT_BACKEND_URL}/internal/payments/update_intent"
-
-    payload = {
-        "intent_uuid": intent_uuid,
-        "order_id": order_id,
-        "payment_url": payment_url,
-    }
-
+    payload = {"intent_uuid": intent_uuid, "order_id": order_id, "payment_url": payment_url}
     try:
-        resp = requests.post(
-            url,
-            json=payload,
-            headers=_internal_headers(),
-            timeout=10,
-        )
-
-        if resp.status_code != 200:
-            logger.warning(
-                f"⚠️ No se pudo actualizar intent {intent_uuid} | status={resp.status_code}"
-            )
-
+        requests.post(url, json=payload, headers=_internal_headers(), timeout=10)
     except Exception as e:
-        logger.error(f"❌ Error actualizando intent en bot backend: {e}", exc_info=True)
+        logger.error(f"❌ Error actualizando intent: {e}")
+
+# ============================================================
+# GET /payments/pay (EL QUE USA EL BOT)
+# ============================================================
+
+@router.get("/pay")
+async def pay_redirect(
+    telegram_id: int = Query(...), 
+    amount: float = Query(...)
+):
+    """
+    Punto de entrada para el botón de Telegram.
+    Recibe los datos, crea el pago y redirige al usuario a Nuvei.
+    """
+    try:
+        # Reutilizamos la lógica de creación de pago
+        req = PaymentCreateRequest(telegram_id=telegram_id, amount=amount)
+        payment_data = create_payment(req)
+        
+        # Redirigir directamente a la URL de Nuvei
+        return RedirectResponse(url=payment_data.payment_url)
+    
+    except HTTPException as e:
+        return {"error": e.detail}
+    except Exception as e:
+        logger.error(f"❌ Error en pay_redirect: {e}")
+        return {"error": "No se pudo generar el link de pago"}
 
 # ============================================================
 # POST /payments/create_payment
@@ -138,16 +132,8 @@ def call_bot_backend_update_intent(intent_uuid: str, order_id: str, payment_url:
 
 @router.post("/create_payment", response_model=PaymentCreateResponse)
 def create_payment(req: PaymentCreateRequest):
-    """
-    Backend Nuvei (V6):
-    - Orquesta BOT + Nuvei
-    - NO toca DB
-    - NO toca balances
-    """
     try:
-        logger.info(
-            f"💰 Create payment | telegram_id={req.telegram_id} | amount=${req.amount:.2f}"
-        )
+        logger.info(f"💰 Creando pago | User: {req.telegram_id} | Amount: {req.amount}")
 
         # 1️⃣ Crear PaymentIntent en BOT
         intent_result = call_bot_backend_create_intent(req.telegram_id, req.amount)
@@ -180,7 +166,7 @@ def create_payment(req: PaymentCreateRequest):
                 "country": "ECU",
             },
             "order": {
-                "dev_reference": intent_uuid,  # UUID V6
+                "dev_reference": intent_uuid,
                 "description": "Recarga PITIUPI",
                 "amount": float(req.amount),
                 "currency": "USD",
@@ -223,7 +209,6 @@ def create_payment(req: PaymentCreateRequest):
 
     except HTTPException:
         raise
-
     except Exception as e:
         logger.error(f"❌ Error inesperado: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error interno del servidor")
+        raise HTTPException(status_code=500, detail="Error interno")
