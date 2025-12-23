@@ -121,29 +121,36 @@ async def pay_redirect(
                 "name": name,
                 "last_name": last_name,
                 "phone_number": phone_number,
-                "fiscal_number": fiscal_number
+                "fiscal_number": fiscal_number,
+                # Opcional: "fiscal_number_type": "CI" o "RUC"
             },
             "order": {
                 "dev_reference": dev_reference,
                 "description": "Recarga PITIUPI",
                 "amount": float(amount),
-                "installments_type": 0,  # ✅ Según spec oficial
+                "installments_type": 0,
                 "currency": "USD",
+                "vat": 0,                    # ✅ AÑADIR
+                "inc": 0,                    # ✅ AÑADIR
+                "taxable_amount": 0,         # ✅ AÑADIR (para Ecuador)
+                "tax_percentage": 0,         # ✅ AÑADIR (0 para Ecuador)
             },
             "configuration": {
-                "partial_payment": False,       
+                "partial_payment": False,
                 "expiration_time": 900,
                 "allowed_payment_methods": ["All"],
                 "success_url": "https://t.me/pitiupibot",
                 "failure_url": "https://t.me/pitiupibot",
                 "pending_url": "https://t.me/pitiupibot",
-                "review_url": "https://t.me/pitiupibot",  
+                "review_url": "https://t.me/pitiupibot",  # ✅ AÑADIR SIEMPRE
+                # "callback_url": "https://tudominio.com/nuvei/callback"  # OPCIONAL
             },
             "billing_address": {
                 "street": street,
                 "city": city,
-                "country": "ECU",  # ✅ ISO-3 según ejemplo oficial
+                "country": "ECU",  # ✅ Correcto ISO-3
                 "zip": zip_code,
+                # Opcional: "state": "Pichincha"
             },
         }
         
