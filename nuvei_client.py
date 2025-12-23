@@ -289,4 +289,3 @@ class NuveiClient:
             return None
 
 
-POST https://pitiupi-backend.onrender.com/payments/create_payment
