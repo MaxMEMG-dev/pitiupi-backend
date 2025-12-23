@@ -281,7 +281,7 @@ class NuveiClient:
             
             return {
                 "success": True,
-                "data": data,
+                "data": data.get("data", {}), 
                 "detail": None,
                 "raw": None,
             }
@@ -317,5 +317,6 @@ class NuveiClient:
         except Exception as e:
             logger.error(f"❌ Error parseando JSON: {e}")
             return None
+
 
 
