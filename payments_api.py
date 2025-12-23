@@ -177,6 +177,64 @@ async def pay_redirect(
             )
 
         data = nuvei_resp["data"]
+        
+        # ========================================================
+        # VALIDACIÓN ROBUSTA DE LA RESPUESTA
+        # ========================================================
+        
+        # Verificar estructura 'order'
+        if "order" not in data:
+            logger.error(f"❌ Campo 'order' faltante en respuesta Nuvei")
+            logger.error(f"📊 Respuesta completa: {data}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (campo 'order' faltante)",
+            )
+        
+        if not isinstance(data["order"], dict):
+            logger.error(f"❌ Campo 'order' no es un diccionario: {type(data['order'])}")
+            logger.error(f"📊 Valor de 'order': {data['order']}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (estructura 'order' incorrecta)",
+            )
+        
+        # Verificar 'id' dentro de 'order'
+        if "id" not in data["order"]:
+            logger.error(f"❌ Campo 'id' faltante dentro de 'order'")
+            logger.error(f"📊 Estructura 'order': {data['order']}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (ID de orden faltante)",
+            )
+        
+        # Verificar estructura 'payment'
+        if "payment" not in data:
+            logger.error(f"❌ Campo 'payment' faltante en respuesta Nuvei")
+            logger.error(f"📊 Respuesta completa: {data}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (campo 'payment' faltante)",
+            )
+        
+        if not isinstance(data["payment"], dict):
+            logger.error(f"❌ Campo 'payment' no es un diccionario: {type(data['payment'])}")
+            logger.error(f"📊 Valor de 'payment': {data['payment']}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (estructura 'payment' incorrecta)",
+            )
+        
+        # Verificar 'payment_url' dentro de 'payment'
+        if "payment_url" not in data["payment"]:
+            logger.error(f"❌ Campo 'payment_url' faltante dentro de 'payment'")
+            logger.error(f"📊 Estructura 'payment': {data['payment']}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (URL de pago faltante)",
+            )
+        
+        # Extraer valores
         order_id = data["order"]["id"]
         payment_url = data["payment"]["payment_url"]
 
@@ -192,11 +250,6 @@ async def pay_redirect(
         logger.error(f"❌ Error crítico en pay_redirect: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error interno del servidor")
 
-
-# ============================================================
-# ENDPOINT API: POST /payments/create_payment
-# (usado desde Postman con datos completos)
-# ============================================================
 
 @router.post("/create_payment", response_model=PaymentCreateResponse)
 def create_payment(req: PaymentCreateRequest):
@@ -275,10 +328,69 @@ def create_payment(req: PaymentCreateRequest):
             )
 
         data = nuvei_resp["data"]
+        
+        # ========================================================
+        # VALIDACIÓN ROBUSTA DE LA RESPUESTA
+        # ========================================================
+        
+        # Verificar estructura 'order'
+        if "order" not in data:
+            logger.error(f"❌ Campo 'order' faltante en respuesta Nuvei")
+            logger.error(f"📊 Respuesta completa: {data}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (campo 'order' faltante)",
+            )
+        
+        if not isinstance(data["order"], dict):
+            logger.error(f"❌ Campo 'order' no es un diccionario: {type(data['order'])}")
+            logger.error(f"📊 Valor de 'order': {data['order']}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (estructura 'order' incorrecta)",
+            )
+        
+        # Verificar 'id' dentro de 'order'
+        if "id" not in data["order"]:
+            logger.error(f"❌ Campo 'id' faltante dentro de 'order'")
+            logger.error(f"📊 Estructura 'order': {data['order']}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (ID de orden faltante)",
+            )
+        
+        # Verificar estructura 'payment'
+        if "payment" not in data:
+            logger.error(f"❌ Campo 'payment' faltante en respuesta Nuvei")
+            logger.error(f"📊 Respuesta completa: {data}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (campo 'payment' faltante)",
+            )
+        
+        if not isinstance(data["payment"], dict):
+            logger.error(f"❌ Campo 'payment' no es un diccionario: {type(data['payment'])}")
+            logger.error(f"📊 Valor de 'payment': {data['payment']}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (estructura 'payment' incorrecta)",
+            )
+        
+        # Verificar 'payment_url' dentro de 'payment'
+        if "payment_url" not in data["payment"]:
+            logger.error(f"❌ Campo 'payment_url' faltante dentro de 'payment'")
+            logger.error(f"📊 Estructura 'payment': {data['payment']}")
+            raise HTTPException(
+                status_code=502,
+                detail="Respuesta inválida de Nuvei (URL de pago faltante)",
+            )
+        
+        # Extraer valores
         order_id = data["order"]["id"]
         payment_url = data["payment"]["payment_url"]
 
         logger.info(f"✅ Link generado | Order ID: {order_id}")
+        logger.info(f"🔗 Payment URL: {payment_url}")
 
         return PaymentCreateResponse(
             success=True,
