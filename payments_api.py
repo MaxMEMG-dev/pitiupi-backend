@@ -136,6 +136,7 @@ async def pay_redirect(
                 "success_url": "https://t.me/pitiupibot",
                 "failure_url": "https://t.me/pitiupibot",
                 "pending_url": "https://t.me/pitiupibot",
+                "review_url": "https://t.me/pitiupibot"
             },
             "billing_address": {
                 "street": street,
