@@ -131,12 +131,13 @@ async def pay_redirect(
                 "currency": "USD",
             },
             "configuration": {
-                "expiration_time": 900,  # 15 minutos
+                "partial_payment": False,       
+                "expiration_time": 900,
                 "allowed_payment_methods": ["All"],
                 "success_url": "https://t.me/pitiupibot",
                 "failure_url": "https://t.me/pitiupibot",
                 "pending_url": "https://t.me/pitiupibot",
-                "review_url": "https://t.me/pitiupibot"
+                "review_url": "https://t.me/pitiupibot",  
             },
             "billing_address": {
                 "street": street,
