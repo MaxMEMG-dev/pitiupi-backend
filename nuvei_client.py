@@ -1,6 +1,6 @@
 # ============================================================
 # nuvei_client.py — Cliente HTTP Nuvei LinkToPay (Ecuador)
-# PITIUPI v6.0 — Motor de Comunicación con Nuvei
+# PITIUPI v6.2 — Motor de Comunicación con Nuvei (Enhanced Logging)
 # ============================================================
 
 import base64
@@ -22,6 +22,7 @@ class NuveiClient:
     - Realizar POST a /linktopay/init_order/
     - Normalizar respuestas exitosas y de error
     - Manejo robusto de timeouts y errores HTTP
+    - **LOGGING COMPLETO DE ERRORES 400/403**
     
     NO hace:
     - Lógica de negocio
@@ -96,12 +97,12 @@ class NuveiClient:
             order_data: Payload completo según spec Nuvei
         
         Returns:
-            dict: Respuesta normalizada V6
+            dict: Respuesta normalizada V6.2
                 {
                     "success": bool,
                     "data": dict | None,      # Respuesta Nuvei si success=True
                     "detail": str | None,     # Mensaje de error si success=False
-                    "raw": str | None         # Response.text si hay error
+                    "raw": str | None         # Response.text si hay error (MEJORADO)
                 }
         """
         url = f"{self.base_url}/linktopay/init_order/"
@@ -159,6 +160,7 @@ class NuveiClient:
         # 5xx: Error interno de Nuvei
         if response.status_code >= 500:
             logger.error(f"❌ Error interno Nuvei: {response.status_code}")
+            logger.error(f"❌ Body: {response.text[:1000]}")
             return {
                 "success": False,
                 "data": None,
@@ -169,6 +171,7 @@ class NuveiClient:
         # 401: Auth-Token inválido o expirado
         if response.status_code == 401:
             logger.error("❌ Auth-Token inválido (401)")
+            logger.error(f"❌ Body: {response.text[:1000]}")
             return {
                 "success": False,
                 "data": None,
@@ -176,14 +179,40 @@ class NuveiClient:
                 "raw": response.text,
             }
 
-        # 400 / 403: Payload inválido o rechazado
+        # ============================================================
+        # 400 / 403: LOGGING MEJORADO (CLAVE PARA DEBUGGING)
+        # ============================================================
         if response.status_code in (400, 403):
-            logger.error(f"❌ Request rechazado ({response.status_code})")
+            body = response.text
+            
+            logger.error("=" * 60)
+            logger.error(f"❌ REQUEST RECHAZADO POR NUVEI ({response.status_code})")
+            logger.error(f"❌ Body completo: {body[:1000]}")
+            logger.error("=" * 60)
+            
+            # Intentar parsear JSON para detalle
+            try:
+                json_body = response.json()
+                logger.error(f"📋 JSON parseado: {json_body}")
+                
+                # Buscar campo de error específico
+                if "error" in json_body:
+                    logger.error(f"🔍 Campo 'error': {json_body['error']}")
+                if "detail" in json_body:
+                    logger.error(f"🔍 Campo 'detail': {json_body['detail']}")
+                if "message" in json_body:
+                    logger.error(f"🔍 Campo 'message': {json_body['message']}")
+                    
+            except Exception as e:
+                logger.error(f"❌ No se pudo parsear JSON: {e}")
+            
+            logger.error("=" * 60)
+            
             return {
                 "success": False,
                 "data": None,
                 "detail": f"Solicitud rechazada por Nuvei ({response.status_code})",
-                "raw": response.text,
+                "raw": body,
             }
 
         # ============================================================
@@ -194,6 +223,7 @@ class NuveiClient:
         
         if not data:
             logger.error("❌ Respuesta Nuvei no es JSON válido")
+            logger.error(f"❌ Raw response: {response.text[:1000]}")
             return {
                 "success": False,
                 "data": None,
@@ -204,6 +234,7 @@ class NuveiClient:
         # Verificar campo "success" en la respuesta
         if "success" not in data:
             logger.error("❌ Respuesta sin campo 'success'")
+            logger.error(f"❌ Data recibida: {data}")
             return {
                 "success": False,
                 "data": None,
@@ -231,6 +262,7 @@ class NuveiClient:
 
         error_detail = data.get("detail") or data.get("error", {}).get("type") or "Error reportado por Nuvei"
         logger.error(f"❌ Nuvei reportó error: {error_detail}")
+        logger.error(f"❌ Data completa: {data}")
         
         return {
             "success": False,
@@ -257,6 +289,4 @@ class NuveiClient:
             return None
 
 
-# ============================================================
-# END OF FILE
-# ============================================================
+POST https://pitiupi-backend.onrender.com/payments/create_payment
