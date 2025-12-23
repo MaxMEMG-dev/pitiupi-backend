@@ -236,6 +236,10 @@ def create_payment(req: PaymentCreateRequest):
                 "amount": float(req.amount),
                 "installments_type": 0,  # ✅ Según spec oficial
                 "currency": "USD",
+                "vat": 0,                    # ✅ AÑADE (required)
+                "inc": 0,                    # ✅ AÑADE (required)
+                "taxable_amount": float(req.amount),  # ✅ AÑADE (para Ecuador)
+                "tax_percentage": 0,         # ✅ AÑADE (0 o 12 para Ecuador)
             },
             "configuration": {
                 "expiration_time": 900,
@@ -243,7 +247,7 @@ def create_payment(req: PaymentCreateRequest):
                 "success_url": "https://t.me/pitiupibot",
                 "failure_url": "https://t.me/pitiupibot",
                 "pending_url": "https://t.me/pitiupibot",
-                "review_url": "https://t.me/pitiupibot", 
+                "review_url": "https://t.me/pitiupibot",  # ✅ AÑADE (REQUIRED!)
             },
             "billing_address": {
                 "street": req.street,
@@ -287,7 +291,6 @@ def create_payment(req: PaymentCreateRequest):
     except Exception as e:
         logger.error(f"❌ Error inesperado: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error interno")
-
 
 # ============================================================
 # HEALTH CHECK
