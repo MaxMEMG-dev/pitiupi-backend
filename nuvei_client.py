@@ -248,7 +248,37 @@ class NuveiClient:
 
         if data.get("success") is True:
             logger.info("✅ LinkToPay creado exitosamente")
-            logger.info(f"🆔 Order ID: {data.get('order', {}).get('id', 'N/A')}")
+            
+            # 📋 LOGGING DETALLADO PARA DEBUG
+            logger.info("=" * 60)
+            logger.info("📊 RESPUESTA COMPLETA DE NUVEI:")
+            logger.info(f"📦 Estructura completa: {data}")
+            
+            # Log específico de campos
+            import json
+            logger.info(f"📋 JSON formateado:\n{json.dumps(data, indent=2)}")
+            
+            # Verificar estructura
+            if "order" in data:
+                logger.info(f"📦 Campo 'order' encontrado: {data['order']}")
+                if isinstance(data["order"], dict):
+                    logger.info(f"🆔 Order ID: {data['order'].get('id', 'NO_ID')}")
+                else:
+                    logger.warning(f"⚠️  Campo 'order' no es dict: {type(data['order'])}")
+            else:
+                logger.warning("⚠️  Campo 'order' NO encontrado en respuesta")
+                
+            if "payment" in data:
+                logger.info(f"💳 Campo 'payment' encontrado: {data['payment']}")
+                if isinstance(data["payment"], dict):
+                    logger.info(f"🔗 Payment URL: {data['payment'].get('payment_url', 'NO_URL')}")
+                else:
+                    logger.warning(f"⚠️  Campo 'payment' no es dict: {type(data['payment'])}")
+            else:
+                logger.warning("⚠️  Campo 'payment' NO encontrado en respuesta")
+                
+            logger.info("=" * 60)
+            
             return {
                 "success": True,
                 "data": data,
