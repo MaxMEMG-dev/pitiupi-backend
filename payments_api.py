@@ -87,38 +87,37 @@ async def pay_redirect(
 
         nuvei_payload = {
             "user": {
-                "id": str(telegram_id),
-                "email": "test@pitiupi.com",
-                "name": "PITIUPI",
-                "last_name": "USER",
-                "phone_number": "0999999999",
-                "fiscal_number": "0000000000",
+                "id": str(req.telegram_id),
+                "email": "max.test@gmail.com",
+                "name": "Maximiliano",
+                "last_name": "Moran",
+                "phone_number": "0987654321",
+                "fiscal_number": "1710034065"
             },
             "billing_address": {
-                "street": "Sin calle",
-                "city": "Quito",
-                "zip": "000000",
-                "country": "ECU",
+                "street": "Av Amazonas",
+                "city": "QUITO",
+                "zip": "170102",
+                "country": "ECU"
             },
             "order": {
                 "dev_reference": intent_uuid,
                 "description": "Recarga PITIUPI",
-                "amount": float(amount),
+                "amount": float(req.amount),
                 "currency": "USD",
                 "vat": 0,
-                "taxable_amount": float(amount),
+                "taxable_amount": float(req.amount),
                 "tax_percentage": 0,
-                "installments_type": 0,
+                "installments_type": 0
             },
             "configuration": {
                 "expiration_time": 900,
                 "allowed_payment_methods": ["All"],
                 "success_url": "https://t.me/pitiupibot",
                 "failure_url": "https://t.me/pitiupibot",
-                "pending_url": "https://t.me/pitiupibot",
-            },
+                "pending_url": "https://t.me/pitiupibot"
+            }
         }
-
         logger.info("📦 Payload Nuvei construido")
 
         # ========================================================
