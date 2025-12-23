@@ -1,6 +1,6 @@
 # ============================================================
 # payments_api.py — Orquestador de LinkToPay Nuvei (Ecuador)
-# PITIUPI v6.1 — Backend Nuvei (CORREGIDO)
+# PITIUPI v6.2 — Backend Nuvei (ESPECIFICACIÓN OFICIAL)
 # ============================================================
 
 from fastapi import APIRouter, HTTPException, Query
@@ -84,7 +84,7 @@ async def pay_redirect(
     🔥 Flujo directo de pago (SIN BOT BACKEND)
 
     1. Recibe datos completos del usuario
-    2. Construye payload Nuvei con datos reales
+    2. Construye payload Nuvei según ESPECIFICACIÓN OFICIAL
     3. Llama a LinkToPay
     4. Redirige al checkout
     """
@@ -98,53 +98,54 @@ async def pay_redirect(
         logger.info("=" * 60)
 
         # ========================================================
-        # GENERACIÓN DE dev_reference (CORREGIDO)
+        # GENERACIÓN DE dev_reference
         # ========================================================
-        # ❌ NUNCA usar UUID con guiones
-        # ✅ Formato: PITIUPI-{telegram_id}-{timestamp}
+        # Formato: PITIUPI-{telegram_id}-{timestamp}
+        # Sin guiones UUID, máximo 32 caracteres
         
         dev_reference = f"PITIUPI-{telegram_id}-{int(time.time())}"
         logger.info(f"🔑 dev_reference generado: {dev_reference}")
 
         # ========================================================
-        # PAYLOAD NUVEI (ECUADOR) — CORREGIDO
+        # PAYLOAD NUVEI (ESPECIFICACIÓN OFICIAL)
         # ========================================================
+        # ✅ Basado en: https://developers.paymentez.com/api/#payment-methods-linktopay
+        # ✅ country: ISO-3 ("ECU" no "EC")
+        # ✅ installments_type: 0 (según ejemplo oficial)
+        # ✅ SIN campos extra (vat, taxable_amount, tax_percentage)
 
         nuvei_payload = {
             "user": {
-                "id": str(telegram_id),  # ✅ CORREGIDO: era req.telegram_id
-                "email": email,  # ✅ DATO REAL
-                "name": name,  # ✅ DATO REAL
-                "last_name": last_name,  # ✅ DATO REAL
-                "phone_number": phone_number,  # ✅ DATO REAL
-                "fiscal_number": fiscal_number  # ✅ DATO REAL
-            },
-            "billing_address": {
-                "street": street,  # ✅ DATO REAL
-                "city": city,  # ✅ DATO REAL
-                "zip": zip_code,  # ✅ DATO REAL
-                "country": "EC"  # ✅ CORREGIDO: era "ECU", debe ser ISO-2
+                "id": str(telegram_id),
+                "email": email,
+                "name": name,
+                "last_name": last_name,
+                "phone_number": phone_number,
+                "fiscal_number": fiscal_number
             },
             "order": {
-                "dev_reference": dev_reference,  # ✅ CORREGIDO: sin UUID
+                "dev_reference": dev_reference,
                 "description": "Recarga PITIUPI",
-                "amount": float(amount),  # ✅ CORREGIDO: era req.amount
+                "amount": float(amount),
+                "installments_type": 0,  # ✅ Según spec oficial
                 "currency": "USD",
-                "vat": 0,
-                "taxable_amount": float(amount),  # ✅ CORREGIDO: era req.amount
-                "tax_percentage": 0,
-                "installments_type": 1  # ✅ CORREGIDO: era 0, debe ser 1
             },
             "configuration": {
-                "expiration_time": 900,
+                "expiration_time": 900,  # 15 minutos
                 "allowed_payment_methods": ["All"],
                 "success_url": "https://t.me/pitiupibot",
                 "failure_url": "https://t.me/pitiupibot",
-                "pending_url": "https://t.me/pitiupibot"
-            }
+                "pending_url": "https://t.me/pitiupibot",
+            },
+            "billing_address": {
+                "street": street,
+                "city": city,
+                "country": "ECU",  # ✅ ISO-3 según ejemplo oficial
+                "zip": zip_code,
+            },
         }
         
-        logger.info("📦 Payload Nuvei construido con datos reales")
+        logger.info("📦 Payload Nuvei construido según especificación oficial")
         logger.debug(f"📋 Payload completo: {nuvei_payload}")
 
         # ========================================================
@@ -154,10 +155,16 @@ async def pay_redirect(
         nuvei_resp = client.create_linktopay(nuvei_payload)
 
         if not nuvei_resp.get("success"):
-            logger.error(f"❌ Error Nuvei: {nuvei_resp.get('detail')}")
+            error_detail = nuvei_resp.get("detail", "Error comunicándose con Nuvei")
+            error_raw = nuvei_resp.get("raw", "")
+            
+            logger.error(f"❌ Error Nuvei: {error_detail}")
+            if error_raw:
+                logger.error(f"❌ Raw response: {error_raw[:500]}")
+            
             raise HTTPException(
                 status_code=502,
-                detail=nuvei_resp.get("detail", "Error comunicándose con Nuvei"),
+                detail=error_detail,
             )
 
         data = nuvei_resp["data"]
@@ -195,40 +202,31 @@ def create_payment(req: PaymentCreateRequest):
         logger.info(f"📧 Email: {req.email} | 👤 Usuario: {req.name} {req.last_name}")
 
         # ========================================================
-        # GENERACIÓN DE dev_reference (CORREGIDO)
+        # GENERACIÓN DE dev_reference
         # ========================================================
         
         dev_reference = f"PITIUPI-{req.telegram_id}-{int(time.time())}"
         logger.info(f"🔑 dev_reference generado: {dev_reference}")
 
         # ========================================================
-        # PAYLOAD NUVEI (CORREGIDO)
+        # PAYLOAD NUVEI (ESPECIFICACIÓN OFICIAL)
         # ========================================================
 
         nuvei_payload = {
             "user": {
                 "id": str(req.telegram_id),
-                "email": req.email,  # ✅ DATO REAL
-                "name": req.name,  # ✅ DATO REAL
-                "last_name": req.last_name,  # ✅ DATO REAL
-                "phone_number": req.phone_number,  # ✅ DATO REAL
-                "fiscal_number": req.fiscal_number,  # ✅ DATO REAL
-            },
-            "billing_address": {
-                "street": req.street,  # ✅ DATO REAL
-                "city": req.city,  # ✅ DATO REAL
-                "zip": req.zip_code,  # ✅ DATO REAL
-                "country": "EC",  # ✅ CORREGIDO: ISO-2
+                "email": req.email,
+                "name": req.name,
+                "last_name": req.last_name,
+                "phone_number": req.phone_number,
+                "fiscal_number": req.fiscal_number,
             },
             "order": {
-                "dev_reference": dev_reference,  # ✅ CORREGIDO: sin UUID
+                "dev_reference": dev_reference,
                 "description": "Recarga PITIUPI",
                 "amount": float(req.amount),
+                "installments_type": 0,  # ✅ Según spec oficial
                 "currency": "USD",
-                "vat": 0,
-                "taxable_amount": float(req.amount),
-                "tax_percentage": 0,
-                "installments_type": 1,  # ✅ CORREGIDO: era 0
             },
             "configuration": {
                 "expiration_time": 900,
@@ -237,6 +235,12 @@ def create_payment(req: PaymentCreateRequest):
                 "failure_url": "https://t.me/pitiupibot",
                 "pending_url": "https://t.me/pitiupibot",
             },
+            "billing_address": {
+                "street": req.street,
+                "city": req.city,
+                "country": "ECU",  # ✅ ISO-3
+                "zip": req.zip_code,
+            },
         }
 
         logger.debug(f"📋 Payload completo: {nuvei_payload}")
@@ -244,10 +248,16 @@ def create_payment(req: PaymentCreateRequest):
         nuvei_resp = client.create_linktopay(nuvei_payload)
 
         if not nuvei_resp.get("success"):
-            logger.error(f"❌ Error Nuvei: {nuvei_resp.get('detail')}")
+            error_detail = nuvei_resp.get("detail", "Error Nuvei")
+            error_raw = nuvei_resp.get("raw", "")
+            
+            logger.error(f"❌ Error Nuvei: {error_detail}")
+            if error_raw:
+                logger.error(f"❌ Raw response: {error_raw[:500]}")
+            
             raise HTTPException(
                 status_code=502,
-                detail=nuvei_resp.get("detail", "Error Nuvei"),
+                detail=error_detail,
             )
 
         data = nuvei_resp["data"]
@@ -278,14 +288,16 @@ async def health_check():
     return {
         "status": "healthy",
         "module": "payments_api",
-        "version": "6.1",
+        "version": "6.2",
         "nuvei_env": ENV,
+        "spec_compliance": "Official Nuvei LinkToPay Specification",
         "corrections_applied": [
-            "country: ECU -> EC (ISO-2)",
-            "installments_type: 0 -> 1",
-            "dev_reference: UUID -> timestamp-based",
-            "req.telegram_id -> telegram_id (GET endpoint)",
-            "Datos fake -> datos reales del usuario"
+            "✅ country: ECU (ISO-3 según doc oficial)",
+            "✅ installments_type: 0 (según ejemplo oficial)",
+            "✅ dev_reference: timestamp-based (sin UUID)",
+            "✅ Eliminados campos no soportados (vat, taxable_amount, tax_percentage)",
+            "✅ Datos reales del usuario (no fake data)",
+            "✅ Raw error logging habilitado"
         ]
     }
 
