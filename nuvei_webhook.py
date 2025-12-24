@@ -1,6 +1,6 @@
 # ============================================================
 # nuvei_webhook.py — Receptor de Webhooks Nuvei (Ecuador)
-# PITIUPI v6.0 — Backend Nuvei (validación STOKEN + delegación)
+# PITIUPI v6.3 — Backend Nuvei (validación STOKEN)
 # ============================================================
 
 from fastapi import APIRouter, Request, HTTPException
@@ -17,36 +17,21 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # VARIABLES DE ENTORNO
 # ============================================================
+APP_CODE = os.getenv("NUVEI_APP_CODE_SERVER")
 APP_KEY = os.getenv("NUVEI_APP_KEY_SERVER")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_BACKEND_URL = os.getenv("BOT_BACKEND_URL")
-INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
 
 # Validación crítica
 if not APP_KEY:
     raise RuntimeError("❌ NUVEI_APP_KEY_SERVER es obligatorio")
 
-if not BOT_BACKEND_URL:
-    raise RuntimeError("❌ BOT_BACKEND_URL es obligatorio")
-
-if not INTERNAL_API_KEY:
-    raise RuntimeError("❌ INTERNAL_API_KEY es obligatorio")
+if not APP_CODE:
+    raise RuntimeError("❌ NUVEI_APP_CODE_SERVER es obligatorio")
 
 if not BOT_TOKEN:
     logger.warning("⚠️ BOT_TOKEN no configurado - Notificaciones Telegram desactivadas")
 
 logger.info("✅ Webhook Nuvei configurado")
-
-# ============================================================
-# HELPERS INTERNOS
-# ============================================================
-
-def _internal_headers() -> dict:
-    """Headers de autenticación interna entre servicios"""
-    return {
-        "X-Internal-API-Key": INTERNAL_API_KEY,
-        "Content-Type": "application/json",
-    }
 
 # ============================================================
 # STOKEN — FÓRMULA OFICIAL NUVEI
@@ -76,7 +61,7 @@ def generate_stoken(
     return hashlib.md5(raw.encode()).hexdigest()
 
 # ============================================================
-# TELEGRAM NOTIFICATIONS (OPCIONAL)
+# TELEGRAM NOTIFICATIONS
 # ============================================================
 
 def send_telegram_message(chat_id: int, text: str) -> None:
@@ -86,6 +71,7 @@ def send_telegram_message(chat_id: int, text: str) -> None:
     Esta función es best-effort (si falla, solo se loggea)
     """
     if not BOT_TOKEN:
+        logger.warning("⚠️ BOT_TOKEN no configurado, no se puede enviar mensaje")
         return
 
     try:
@@ -101,100 +87,109 @@ def send_telegram_message(chat_id: int, text: str) -> None:
         if resp.status_code == 200:
             logger.info(f"✅ Mensaje Telegram enviado a {chat_id}")
         else:
-            logger.warning(f"⚠️ Error enviando Telegram: {resp.status_code}")
+            logger.warning(f"⚠️ Error enviando Telegram: {resp.status_code} - {resp.text[:200]}")
 
     except Exception as e:
         logger.error(f"❌ Error enviando mensaje Telegram: {e}")
 
 # ============================================================
-# BOT BACKEND CALLS
+# HELPER: EXTRAER TELEGRAM_ID DEL DEV_REFERENCE
 # ============================================================
 
-def get_telegram_id_from_intent(intent_uuid: str) -> int | None:
+def extract_telegram_id_from_dev_reference(dev_reference: str) -> int | None:
     """
-    Obtiene el telegram_id asociado a un intent_uuid
+    Extrae el telegram_id del dev_reference
     
-    Returns:
-        int: Telegram ID si se encuentra
-        None: Si no existe o hay error
-    """
-    url = f"{BOT_BACKEND_URL}/internal/payments/intent/{intent_uuid}"
-
-    logger.info(f"📞 Obteniendo telegram_id | Intent: {intent_uuid}")
-
-    try:
-        resp = requests.get(
-            url,
-            headers=_internal_headers(),
-            timeout=10,
-        )
-
-        if resp.status_code == 200:
-            data = resp.json()
-            telegram_id = data.get("telegram_id")
-            logger.info(f"✅ Telegram ID obtenido: {telegram_id}")
-            return telegram_id
-
-        logger.error(f"❌ Error obteniendo intent: {resp.status_code}")
-        return None
-
-    except Exception as e:
-        logger.error(f"❌ Error llamando Bot Backend: {e}")
-        return None
-
-
-def call_bot_backend_confirm_payment(
-    intent_uuid: str,
-    transaction_id: str,
-    amount: Decimal,
-    authorization_code: str | None = None
-) -> dict:
-    """
-    Confirma el pago en el Bot Backend (actualiza balance + ledger)
+    Formato esperado: PITIUPI-{telegram_id}-{timestamp}
+    Ejemplo: PITIUPI-123456789-1734567890
     
     Args:
-        intent_uuid: UUID del PaymentIntent
-        transaction_id: ID de transacción Nuvei
-        amount: Monto recibido
+        dev_reference: Referencia de desarrollador
+    
+    Returns:
+        int: Telegram ID si se puede extraer
+        None: Si el formato es inválido
+    """
+    try:
+        # Formato: PITIUPI-{telegram_id}-{timestamp}
+        parts = dev_reference.split("-")
+        if len(parts) >= 2 and parts[0] == "PITIUPI":
+            telegram_id = int(parts[1])
+            logger.info(f"✅ Telegram ID extraído de dev_reference: {telegram_id}")
+            return telegram_id
+    except (ValueError, IndexError) as e:
+        logger.error(f"❌ Error extrayendo telegram_id de '{dev_reference}': {e}")
+    
+    return None
+
+# ============================================================
+# DATABASE INTEGRATION (OPCIONAL)
+# ============================================================
+
+try:
+    from database.session import SessionLocal
+    from database.models.payment_intents import PaymentIntent, PaymentIntentStatus
+    DB_AVAILABLE = True
+    logger.info("✅ Base de datos disponible para actualizar payment intents")
+except ImportError:
+    DB_AVAILABLE = False
+    logger.warning("⚠️ Base de datos no disponible - Solo notificaciones Telegram")
+
+def update_payment_intent_in_db(
+    provider_order_id: str,
+    status: PaymentIntentStatus,
+    transaction_id: str,
+    authorization_code: str | None = None
+) -> bool:
+    """
+    Actualiza el estado del payment intent en la base de datos
+    
+    Args:
+        provider_order_id: Order ID de Nuvei
+        status: Nuevo estado del payment intent
+        transaction_id: ID de transacción de Nuvei
         authorization_code: Código de autorización (opcional)
     
     Returns:
-        dict: {"success": bool, "already_confirmed": bool (opcional)}
+        bool: True si se actualizó correctamente, False en caso contrario
     """
-    url = f"{BOT_BACKEND_URL}/internal/payments/confirm"
-
-    payload = {
-        "intent_uuid": intent_uuid,
-        "provider_tx_id": transaction_id,
-        "amount_received": float(amount),
-        "authorization_code": authorization_code,
-    }
-
-    logger.info(f"📞 Confirmando pago en Bot | Intent: {intent_uuid}")
-
+    if not DB_AVAILABLE:
+        logger.warning("⚠️ DB no disponible, no se puede actualizar payment intent")
+        return False
+    
+    db = SessionLocal()
     try:
-        resp = requests.post(
-            url,
-            json=payload,
-            headers=_internal_headers(),
-            timeout=30,
-        )
-
-        if resp.status_code == 200:
-            logger.info("✅ Pago confirmado en Bot Backend")
-            return {"success": True}
-
-        if resp.status_code == 409:
-            # Idempotencia: pago ya confirmado previamente
-            logger.info("ℹ️ Pago ya confirmado (idempotencia)")
-            return {"success": True, "already_confirmed": True}
-
-        logger.error(f"❌ Error confirmando pago: {resp.status_code} | {resp.text[:200]}")
-        return {"success": False}
-
+        # Buscar payment intent por provider_order_id
+        intent = db.query(PaymentIntent).filter(
+            PaymentIntent.provider_order_id == provider_order_id
+        ).first()
+        
+        if not intent:
+            logger.error(f"❌ Payment intent no encontrado: order_id={provider_order_id}")
+            return False
+        
+        # Actualizar estado
+        intent.status = status
+        
+        # Actualizar detalles
+        if not intent.details:
+            intent.details = {}
+        
+        intent.details["transaction_id"] = transaction_id
+        if authorization_code:
+            intent.details["authorization_code"] = authorization_code
+        intent.details["updated_at"] = datetime.utcnow().isoformat()
+        
+        db.commit()
+        logger.info(f"✅ Payment intent actualizado: {provider_order_id} → {status.value}")
+        return True
+        
     except Exception as e:
-        logger.error(f"❌ Error crítico confirmando pago: {e}", exc_info=True)
-        return {"success": False}
+        db.rollback()
+        logger.error(f"❌ Error actualizando payment intent: {e}", exc_info=True)
+        return False
+    finally:
+        db.close()
 
 # ============================================================
 # WEBHOOK NUVEI
@@ -208,12 +203,14 @@ async def nuvei_callback(request: Request):
     Flujo:
     1. Recibe POST de Nuvei con datos de transacción
     2. Valida STOKEN (seguridad crítica)
-    3. Si pago aprobado (status=1, status_detail=3):
-       - Confirma pago en Bot Backend
+    3. Extrae telegram_id del dev_reference
+    4. Si pago aprobado (status=1, status_detail=3):
+       - Actualiza payment intent en DB (si disponible)
        - Envía notificación Telegram
-    4. Si pago rechazado/pendiente:
+    5. Si pago rechazado/pendiente:
+       - Actualiza payment intent en DB (si disponible)
        - Notifica estado por Telegram
-    5. SIEMPRE responde HTTP 200 a Nuvei
+    6. SIEMPRE responde HTTP 200 a Nuvei
     
     Returns:
         dict: {"status": "OK"} (siempre)
@@ -226,7 +223,7 @@ async def nuvei_callback(request: Request):
         payload = await request.json()
         logger.info("=" * 60)
         logger.info("🔥 Webhook Nuvei recibido")
-        logger.debug(f"📦 Payload: {payload}")
+        logger.debug(f"📦 Payload completo: {payload}")
 
         tx = payload.get("transaction")
         if not tx:
@@ -235,7 +232,8 @@ async def nuvei_callback(request: Request):
 
         # Extraer campos críticos
         transaction_id = tx.get("id")
-        dev_reference = tx.get("dev_reference")  # Este es el intent_uuid
+        order_id = tx.get("order_id")  # Este es el provider_order_id
+        dev_reference = tx.get("dev_reference")
         application_code = tx.get("application_code")
         status = str(tx.get("status"))
         status_detail = str(tx.get("status_detail"))
@@ -244,6 +242,7 @@ async def nuvei_callback(request: Request):
         authorization_code = tx.get("authorization_code")
 
         logger.info(f"🆔 Transaction ID: {transaction_id}")
+        logger.info(f"📦 Order ID: {order_id}")
         logger.info(f"📋 Dev Reference: {dev_reference}")
         logger.info(f"📊 Status: {status}/{status_detail}")
         logger.info(f"💵 Amount: {amount_raw}")
@@ -256,15 +255,15 @@ async def nuvei_callback(request: Request):
         amount = Decimal(str(amount_raw))
 
         # ============================================================
-        # 2️⃣ OBTENER TELEGRAM_ID
+        # 2️⃣ EXTRAER TELEGRAM_ID DEL DEV_REFERENCE
         # ============================================================
 
-        telegram_id = get_telegram_id_from_intent(dev_reference)
+        telegram_id = extract_telegram_id_from_dev_reference(dev_reference)
         if not telegram_id:
-            logger.warning(f"⚠️ No se encontró telegram_id para intent {dev_reference}")
+            logger.error(f"❌ No se pudo extraer telegram_id de dev_reference: {dev_reference}")
             return {"status": "OK"}
 
-        logger.info(f"👤 Telegram ID: {telegram_id}")
+        logger.info(f"👤 Telegram ID extraído: {telegram_id}")
 
         # ============================================================
         # 3️⃣ VALIDAR STOKEN (SEGURIDAD CRÍTICA)
@@ -282,6 +281,7 @@ async def nuvei_callback(request: Request):
 
         if sent_stoken != expected_stoken:
             logger.error("❌ STOKEN INVÁLIDO - Webhook rechazado")
+            logger.error(f"❌ Datos usados: tx_id={transaction_id}, app_code={application_code}, user_id={telegram_id}")
             raise HTTPException(status_code=203, detail="STOKEN inválido")
 
         logger.info("✅ STOKEN validado correctamente")
@@ -294,67 +294,131 @@ async def nuvei_callback(request: Request):
         if status == "1" and status_detail == "3":
             logger.info("🎉 PAGO APROBADO - Procesando confirmación")
 
-            result = call_bot_backend_confirm_payment(
-                intent_uuid=dev_reference,
-                transaction_id=transaction_id,
-                amount=amount,
-                authorization_code=authorization_code,
+            # Actualizar en DB si está disponible
+            if DB_AVAILABLE and order_id:
+                db_updated = update_payment_intent_in_db(
+                    provider_order_id=order_id,
+                    status=PaymentIntentStatus.COMPLETED,
+                    transaction_id=transaction_id,
+                    authorization_code=authorization_code
+                )
+                if db_updated:
+                    logger.info("✅ Payment intent actualizado en DB")
+                else:
+                    logger.warning("⚠️ No se pudo actualizar payment intent en DB")
+
+            # Notificar usuario por Telegram
+            send_telegram_message(
+                telegram_id,
+                (
+                    "🎉 <b>¡PAGO APROBADO!</b>\n\n"
+                    f"💳 <b>Monto:</b> ${amount} USD\n"
+                    f"🧾 <b>Transacción:</b> {transaction_id}\n"
+                    f"🏷 <b>Referencia:</b> {dev_reference}\n"
+                    f"✅ <b>Autorización:</b> {authorization_code or 'N/A'}\n\n"
+                    "✅ <b>Tu pago ha sido procesado</b>\n\n"
+                    "Gracias por usar <b>PITIUPI</b> 🚀"
+                ),
             )
 
-            if result.get("success"):
-                logger.info("✅ Pago confirmado exitosamente")
-
-                # Notificar usuario por Telegram
-                send_telegram_message(
-                    telegram_id,
-                    (
-                        "🎉 <b>¡PAGO APROBADO!</b>\n\n"
-                        f"💳 <b>Monto:</b> ${amount} USD\n"
-                        f"🧾 <b>Transacción:</b> {transaction_id}\n"
-                        f"🏷 <b>Referencia:</b> {dev_reference}\n"
-                        f"✅ <b>Autorización:</b> {authorization_code or 'N/A'}\n\n"
-                        "✅ <b>Tu saldo ha sido actualizado</b>\n\n"
-                        "Gracias por usar <b>PITIUPI</b> 🚀"
-                    ),
+        # 🔄 PAGO PENDIENTE
+        elif status == "0":
+            logger.info("⏳ Pago pendiente")
+            
+            if DB_AVAILABLE and order_id:
+                update_payment_intent_in_db(
+                    provider_order_id=order_id,
+                    status=PaymentIntentStatus.PENDING,
+                    transaction_id=transaction_id
                 )
-            else:
-                logger.error("❌ Error confirmando pago en Bot Backend")
-                send_telegram_message(
-                    telegram_id,
-                    (
-                        "⚠️ <b>Error procesando pago</b>\n\n"
-                        f"🧾 <b>Transacción:</b> {transaction_id}\n"
-                        f"💵 <b>Monto:</b> ${amount} USD\n\n"
-                        "Por favor contacta a soporte."
-                    ),
-                )
-
-        # 🔄 PAGO PENDIENTE / RECHAZADO / CANCELADO
-        elif status in {"0", "2", "4", "5"}:
-            status_map = {
-                "0": "⏳ Pendiente",
-                "2": "❌ Cancelado",
-                "4": "❌ Rechazado",
-                "5": "⏰ Expirado",
-            }
-            status_text = status_map.get(status, "❓ Desconocido")
-
-            logger.info(f"ℹ️ Pago en estado: {status_text}")
 
             send_telegram_message(
                 telegram_id,
                 (
-                    f"ℹ️ <b>Estado del pago: {status_text}</b>\n\n"
-                    f"🧾 <b>Referencia:</b> {dev_reference}\n"
-                    f"💳 <b>Monto:</b> ${amount} USD\n"
-                    f"📌 <b>Estado:</b> {status}/{status_detail}\n\n"
-                    "Si necesitas ayuda, contacta a soporte."
+                    "⏳ <b>Pago Pendiente</b>\n\n"
+                    f"💵 <b>Monto:</b> ${amount} USD\n"
+                    f"🧾 <b>Referencia:</b> {dev_reference}\n\n"
+                    "Tu pago está siendo procesado. Te notificaremos cuando se complete."
+                ),
+            )
+
+        # ❌ PAGO RECHAZADO
+        elif status == "4":
+            logger.info("❌ Pago rechazado")
+            
+            if DB_AVAILABLE and order_id:
+                update_payment_intent_in_db(
+                    provider_order_id=order_id,
+                    status=PaymentIntentStatus.FAILED,
+                    transaction_id=transaction_id
+                )
+
+            send_telegram_message(
+                telegram_id,
+                (
+                    "❌ <b>Pago Rechazado</b>\n\n"
+                    f"💵 <b>Monto:</b> ${amount} USD\n"
+                    f"🧾 <b>Referencia:</b> {dev_reference}\n\n"
+                    "Tu pago no pudo ser procesado. Por favor intenta nuevamente o contacta a soporte."
+                ),
+            )
+
+        # 🚫 PAGO CANCELADO
+        elif status == "2":
+            logger.info("🚫 Pago cancelado")
+            
+            if DB_AVAILABLE and order_id:
+                update_payment_intent_in_db(
+                    provider_order_id=order_id,
+                    status=PaymentIntentStatus.CANCELLED,
+                    transaction_id=transaction_id
+                )
+
+            send_telegram_message(
+                telegram_id,
+                (
+                    "🚫 <b>Pago Cancelado</b>\n\n"
+                    f"💵 <b>Monto:</b> ${amount} USD\n"
+                    f"🧾 <b>Referencia:</b> {dev_reference}\n\n"
+                    "El pago fue cancelado."
+                ),
+            )
+
+        # ⏰ PAGO EXPIRADO
+        elif status == "5":
+            logger.info("⏰ Pago expirado")
+            
+            if DB_AVAILABLE and order_id:
+                update_payment_intent_in_db(
+                    provider_order_id=order_id,
+                    status=PaymentIntentStatus.EXPIRED,
+                    transaction_id=transaction_id
+                )
+
+            send_telegram_message(
+                telegram_id,
+                (
+                    "⏰ <b>Pago Expirado</b>\n\n"
+                    f"💵 <b>Monto:</b> ${amount} USD\n"
+                    f"🧾 <b>Referencia:</b> {dev_reference}\n\n"
+                    "El tiempo para completar el pago ha expirado. Por favor genera un nuevo link de pago."
                 ),
             )
 
         # ❓ ESTADO DESCONOCIDO
         else:
             logger.warning(f"⚠️ Estado no manejado: {status}/{status_detail}")
+            
+            send_telegram_message(
+                telegram_id,
+                (
+                    f"ℹ️ <b>Actualización de Pago</b>\n\n"
+                    f"💵 <b>Monto:</b> ${amount} USD\n"
+                    f"🧾 <b>Referencia:</b> {dev_reference}\n"
+                    f"📌 <b>Estado:</b> {status}/{status_detail}\n\n"
+                    "Si necesitas ayuda, contacta a soporte."
+                ),
+            )
 
         logger.info("=" * 60)
         return {"status": "OK"}
@@ -378,11 +442,14 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "nuvei_webhook",
-        "version": "6.0",
+        "version": "6.3",
         "timestamp": datetime.utcnow().isoformat(),
-        "bot_backend_configured": bool(BOT_BACKEND_URL),
-        "internal_api_key_configured": bool(INTERNAL_API_KEY),
-        "telegram_notifications": bool(BOT_TOKEN),
+        "features": [
+            "✅ STOKEN validation",
+            "✅ Telegram notifications" if BOT_TOKEN else "⚠️ Telegram not configured",
+            "✅ DB integration" if DB_AVAILABLE else "⚠️ DB not available",
+        ],
+        "database_mode": "CONNECTED" if DB_AVAILABLE else "STATELESS",
     }
 
 # ============================================================
