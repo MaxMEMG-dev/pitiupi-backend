@@ -1,431 +1,257 @@
 # ============================================================
-# payments_api.py — Orquestador de LinkToPay Nuvei (Ecuador)
-# PITIUPI v6.2 — Backend Nuvei (ESPECIFICACIÓN OFICIAL)
+# api/routes/payments_api.py — Receptor de Webhooks Nuvei
+# PITIUPI v6.0 — Backend Nuvei (validación STOKEN + delegación)
 # ============================================================
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
-import os
+from fastapi import APIRouter, Request, HTTPException, Depends, Header
+import hashlib
 import logging
-import time
+import os
+import requests
+from datetime import datetime
+from decimal import Decimal
+from typing import Dict, Any, Optional
+from sqlalchemy.orm import Session
 
-from nuvei_client import NuveiClient
+# Integración con el Core de PITIUPI V6
+from database.session import get_session
+from database.services import payments_service, users_service
+from database.models.payment_intents import PaymentIntentStatus
 
-router = APIRouter(tags=["Payments"])
+router = APIRouter(tags=["Nuvei"])
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# VARIABLES DE ENTORNO (Render)
+# VARIABLES DE ENTORNO
 # ============================================================
-
-APP_CODE = os.getenv("NUVEI_APP_CODE_SERVER")
 APP_KEY = os.getenv("NUVEI_APP_KEY_SERVER")
-ENV = os.getenv("NUVEI_ENV", "stg")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_BACKEND_URL = os.getenv("BOT_BACKEND_URL")
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
 
 # Validación crítica
-if not APP_CODE or not APP_KEY:
-    raise RuntimeError("❌ NUVEI_APP_CODE_SERVER y NUVEI_APP_KEY_SERVER son obligatorios")
+if not APP_KEY:
+    logger.error("❌ NUVEI_APP_KEY_SERVER es obligatorio")
+
+if not INTERNAL_API_KEY:
+    logger.error("❌ INTERNAL_API_KEY es obligatorio")
+
+if not BOT_TOKEN:
+    logger.warning("⚠️ BOT_TOKEN no configurado - Notificaciones Telegram desactivadas")
 
 # ============================================================
-# CLIENTE NUVEI
+# HELPERS Y SEGURIDAD
 # ============================================================
 
-client = NuveiClient(
-    app_code=APP_CODE,
-    app_key=APP_KEY,
-    environment=ENV,
-)
+def verify_internal_key(x_internal_api_key: str = Header(...)):
+    """Valida que la llamada provenga del Bot u otro servicio interno."""
+    if x_internal_api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=403, detail="Acceso no autorizado")
 
-logger.info(f"✅ NuveiClient inicializado | env={ENV}")
-
-# ============================================================
-# MODELOS PYDANTIC
-# ============================================================
-
-class PaymentCreateRequest(BaseModel):
-    telegram_id: int = Field(..., gt=0, description="Telegram ID del usuario")
-    amount: float = Field(..., gt=0, le=10000, description="Monto en USD")
-    email: str = Field(..., description="Email del usuario")
-    name: str = Field(..., description="Nombre del usuario")
-    last_name: str = Field(..., description="Apellido del usuario")
-    phone_number: str = Field(..., min_length=10, max_length=10, description="Teléfono (10 dígitos)")
-    fiscal_number: str = Field(..., min_length=10, max_length=13, description="Cédula o RUC")
-    street: str = Field(default="Sin calle", description="Dirección")
-    city: str = Field(default="Quito", description="Ciudad")
-    zip_code: str = Field(default="170102", description="Código postal")
-
-
-class PaymentCreateResponse(BaseModel):
-    success: bool
-    order_id: str
-    payment_url: str
-
+def _internal_headers() -> dict:
+    """Headers para compatibilidad con servicios que aún usen peticiones HTTP"""
+    return {
+        "X-Internal-API-Key": INTERNAL_API_KEY,
+        "Content-Type": "application/json",
+    }
 
 # ============================================================
-# ENDPOINT PRINCIPAL: GET /payments/pay
-# (usado desde botón de Telegram)
+# STOKEN — FÓRMULA OFICIAL NUVEI
 # ============================================================
 
-@router.get("/pay")
-async def pay_redirect(
-    telegram_id: int = Query(..., description="Telegram ID del usuario"),
-    amount: float = Query(..., gt=0, le=10000, description="Monto en USD"),
-    email: str = Query(..., description="Email del usuario"),
-    name: str = Query(..., description="Nombre del usuario"),
-    last_name: str = Query(..., description="Apellido del usuario"),
-    phone_number: str = Query(..., description="Teléfono (10 dígitos)"),
-    fiscal_number: str = Query(..., description="Cédula o RUC"),
-    street: str = Query(default="Sin calle", description="Dirección"),
-    city: str = Query(default="Quito", description="Ciudad"),
-    zip_code: str = Query(default="170102", description="Código postal"),
-):
+def generate_stoken(
+    transaction_id: str,
+    application_code: str,
+    user_id: str,
+    app_key: str
+) -> str:
     """
-    🔥 Flujo directo de pago (SIN BOT BACKEND)
-
-    1. Recibe datos completos del usuario
-    2. Construye payload Nuvei según ESPECIFICACIÓN OFICIAL
-    3. Llama a LinkToPay
-    4. Redirige al checkout
+    Formula: MD5(transaction_id + "_" + application_code + "_" + user_id + "_" + app_key)
     """
+    raw = f"{transaction_id}_{application_code}_{user_id}_{app_key}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+# ============================================================
+# TELEGRAM NOTIFICATIONS
+# ============================================================
+
+def send_telegram_message(chat_id: int, text: str) -> None:
+    """Envía mensaje por Telegram (best-effort)"""
+    if not BOT_TOKEN:
+        return
     try:
-        logger.info("=" * 60)
-        logger.info("💰 Iniciando flujo de pago (redirect)")
-        logger.info(f"👤 Telegram ID: {telegram_id}")
-        logger.info(f"💵 Monto: ${amount} USD")
-        logger.info(f"📧 Email: {email}")
-        logger.info(f"👤 Usuario: {name} {last_name}")
-        logger.info("=" * 60)
-
-        # ========================================================
-        # GENERACIÓN DE dev_reference
-        # ========================================================
-        # Formato: PITIUPI-{telegram_id}-{timestamp}
-        # Sin guiones UUID, máximo 32 caracteres
-        
-        dev_reference = f"PITIUPI-{telegram_id}-{int(time.time())}"
-        logger.info(f"🔑 dev_reference generado: {dev_reference}")
-
-        # ========================================================
-        # PAYLOAD NUVEI (ESPECIFICACIÓN OFICIAL)
-        # ========================================================
-        # ✅ Basado en: https://developers.paymentez.com/api/#payment-methods-linktopay
-        # ✅ country: ISO-3 ("ECU" no "EC")
-        # ✅ installments_type: 0 (según ejemplo oficial)
-        # ✅ SIN campos extra (vat, taxable_amount, tax_percentage)
-
-        nuvei_payload = {
-            "user": {
-                "id": str(telegram_id),
-                "email": email,
-                "name": name,
-                "last_name": last_name,
-                "phone_number": phone_number,
-                "fiscal_number": fiscal_number,
-                # Opcional: "fiscal_number_type": "CI" o "RUC"
-            },
-            "order": {
-                "dev_reference": dev_reference,
-                "description": "Recarga PITIUPI",
-                "amount": float(amount),
-                "installments_type": 0,
-                "currency": "USD",
-                "vat": 0,                    # ✅ AÑADIR
-                "inc": 0,                    # ✅ AÑADIR
-                "taxable_amount": 0,         # ✅ AÑADIR (para Ecuador)
-                "tax_percentage": 0,         # ✅ AÑADIR (0 para Ecuador)
-            },
-            "configuration": {
-                "partial_payment": False,
-                "expiration_time": 900,
-                "allowed_payment_methods": ["All"],
-                "success_url": "https://t.me/pitiupibot",
-                "failure_url": "https://t.me/pitiupibot",
-                "pending_url": "https://t.me/pitiupibot",
-                "review_url": "https://t.me/pitiupibot",  # ✅ AÑADIR SIEMPRE
-                # "callback_url": "https://tudominio.com/nuvei/callback"  # OPCIONAL
-            },
-            "billing_address": {
-                "street": street,
-                "city": city,
-                "country": "ECU",  # ✅ Correcto ISO-3
-                "zip": zip_code,
-                # Opcional: "state": "Pichincha"
-            },
-        }
-        
-        logger.info("📦 Payload Nuvei construido según especificación oficial")
-        logger.debug(f"📋 Payload completo: {nuvei_payload}")
-
-        # ========================================================
-        # LLAMADA A NUVEI
-        # ========================================================
-
-        nuvei_resp = client.create_linktopay(nuvei_payload)
-
-        if not nuvei_resp.get("success"):
-            error_detail = nuvei_resp.get("detail", "Error comunicándose con Nuvei")
-            error_raw = nuvei_resp.get("raw", "")
-            
-            logger.error(f"❌ Error Nuvei: {error_detail}")
-            if error_raw:
-                logger.error(f"❌ Raw response: {error_raw[:500]}")
-            
-            raise HTTPException(
-                status_code=502,
-                detail=error_detail,
-            )
-
-        data = nuvei_resp["data"]
-        
-        # ========================================================
-        # VALIDACIÓN ROBUSTA DE LA RESPUESTA
-        # ========================================================
-        
-        # Verificar estructura 'order'
-        if "order" not in data:
-            logger.error(f"❌ Campo 'order' faltante en respuesta Nuvei")
-            logger.error(f"📊 Respuesta completa: {data}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (campo 'order' faltante)",
-            )
-        
-        if not isinstance(data["order"], dict):
-            logger.error(f"❌ Campo 'order' no es un diccionario: {type(data['order'])}")
-            logger.error(f"📊 Valor de 'order': {data['order']}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (estructura 'order' incorrecta)",
-            )
-        
-        # Verificar 'id' dentro de 'order'
-        if "id" not in data["order"]:
-            logger.error(f"❌ Campo 'id' faltante dentro de 'order'")
-            logger.error(f"📊 Estructura 'order': {data['order']}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (ID de orden faltante)",
-            )
-        
-        # Verificar estructura 'payment'
-        if "payment" not in data:
-            logger.error(f"❌ Campo 'payment' faltante en respuesta Nuvei")
-            logger.error(f"📊 Respuesta completa: {data}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (campo 'payment' faltante)",
-            )
-        
-        if not isinstance(data["payment"], dict):
-            logger.error(f"❌ Campo 'payment' no es un diccionario: {type(data['payment'])}")
-            logger.error(f"📊 Valor de 'payment': {data['payment']}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (estructura 'payment' incorrecta)",
-            )
-        
-        # Verificar 'payment_url' dentro de 'payment'
-        if "payment_url" not in data["payment"]:
-            logger.error(f"❌ Campo 'payment_url' faltante dentro de 'payment'")
-            logger.error(f"📊 Estructura 'payment': {data['payment']}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (URL de pago faltante)",
-            )
-        
-        # Extraer valores
-        order_id = data["order"]["id"]
-        payment_url = data["payment"]["payment_url"]
-
-        logger.info(f"✅ LinkToPay creado | Order ID: {order_id}")
-        logger.info(f"🔗 Payment URL: {payment_url}")
-        logger.info("=" * 60)
-
-        return RedirectResponse(url=payment_url)
-
-    except HTTPException:
-        raise
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            logger.info(f"✅ Mensaje Telegram enviado a {chat_id}")
+        else:
+            logger.warning(f"⚠️ Error enviando Telegram: {resp.status_code}")
     except Exception as e:
-        logger.error(f"❌ Error crítico en pay_redirect: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error interno del servidor")
+        logger.error(f"❌ Error enviando mensaje Telegram: {e}")
 
+# ============================================================
+# BOT BACKEND CALLS (ADAPTADAS A SERVICES INTERNOS V6)
+# ============================================================
 
-@router.post("/create_payment", response_model=PaymentCreateResponse)
-def create_payment(req: PaymentCreateRequest):
-    """
-    🔥 Endpoint de prueba / API directa
-    Devuelve payment_url en JSON
-    
-    ⚠️ REQUIERE DATOS REALES DEL USUARIO
-    """
+def get_telegram_id_from_intent(db: Session, intent_uuid: str) -> Optional[int]:
+    """Obtiene el telegram_id directamente de la DB para evitar latencia HTTP"""
+    intent = payments_service.get_payment_intent_by_uuid(intent_uuid, session=db)
+    if not intent:
+        return None
+    user = users_service.get_user_by_id(db, intent.user_id)
+    return int(user.telegram_id) if user else None
+
+def call_bot_backend_confirm_payment(
+    db: Session,
+    intent_uuid: str,
+    transaction_id: str,
+    amount: Decimal,
+    authorization_code: str | None = None
+) -> dict:
+    """Ejecuta la confirmación financiera en el sistema local"""
     try:
-        logger.info(f"💰 Creando pago | User: {req.telegram_id} | Amount: ${req.amount}")
-        logger.info(f"📧 Email: {req.email} | 👤 Usuario: {req.name} {req.last_name}")
+        # Verificamos si ya está confirmado para cumplir con la lógica de 409 (Conflict)
+        intent = payments_service.get_payment_intent_by_uuid(intent_uuid, session=db)
+        if intent and intent.status == PaymentIntentStatus.COMPLETED:
+            return {"success": True, "already_confirmed": True}
 
-        # ========================================================
-        # GENERACIÓN DE dev_reference
-        # ========================================================
-        
-        dev_reference = f"PITIUPI-{req.telegram_id}-{int(time.time())}"
-        logger.info(f"🔑 dev_reference generado: {dev_reference}")
+        # Ejecutamos el servicio que actualiza balance y crea el ledger
+        payments_service.confirm_payment_intent_service(
+            intent_uuid=intent_uuid,
+            provider_tx_id=transaction_id,
+            amount_received=float(amount),
+            session=db,
+            authorization_code=authorization_code
+        )
+        db.commit() # Importante en V6
+        return {"success": True}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error confirmando pago: {e}")
+        return {"success": False}
 
-        # ========================================================
-        # PAYLOAD NUVEI (ESPECIFICACIÓN OFICIAL)
-        # ========================================================
+# ============================================================
+# WEBHOOK NUVEI
+# ============================================================
 
-        nuvei_payload = {
-            "user": {
-                "id": str(req.telegram_id),
-                "email": req.email,
-                "name": req.name,
-                "last_name": req.last_name,
-                "phone_number": req.phone_number,
-                "fiscal_number": req.fiscal_number,
-            },
-            "order": {
-                "dev_reference": dev_reference,
-                "description": "Recarga PITIUPI",
-                "amount": float(req.amount),
-                "installments_type": 0,  # ✅ Según spec oficial
-                "currency": "USD",
-                "vat": 0,                    # ✅ AÑADE (required)
-                "inc": 0,                    # ✅ AÑADE (required)
-                "taxable_amount": float(req.amount),  # ✅ AÑADE (para Ecuador)
-                "tax_percentage": 0,         # ✅ AÑADE (0 o 12 para Ecuador)
-            },
-            "configuration": {
-                "expiration_time": 900,
-                "allowed_payment_methods": ["All"],
-                "success_url": "https://t.me/pitiupibot",
-                "failure_url": "https://t.me/pitiupibot",
-                "pending_url": "https://t.me/pitiupibot",
-                "review_url": "https://t.me/pitiupibot",  # ✅ AÑADE (REQUIRED!)
-            },
-            "billing_address": {
-                "street": req.street,
-                "city": req.city,
-                "country": "ECU",  # ✅ ISO-3
-                "zip": req.zip_code,
-            },
-        }
+@router.post("/callback")
+async def nuvei_callback(request: Request, db: Session = Depends(get_session)):
+    """🔥 Webhook oficial de Nuvei"""
+    try:
+        payload = await request.json()
+        logger.info("=" * 60)
+        logger.info("🔥 Webhook Nuvei recibido")
+        logger.debug(f"📦 Payload: {payload}")
 
-        logger.debug(f"📋 Payload completo: {nuvei_payload}")
+        tx = payload.get("transaction")
+        if not tx:
+            logger.warning("⚠️ Webhook sin campo 'transaction'")
+            return {"status": "OK"}
 
-        nuvei_resp = client.create_linktopay(nuvei_payload)
+        # Extraer campos críticos
+        transaction_id = tx.get("id")
+        dev_reference = tx.get("dev_reference")  # intent_uuid
+        application_code = tx.get("application_code")
+        status = str(tx.get("status"))
+        status_detail = str(tx.get("status_detail"))
+        amount_raw = tx.get("amount")
+        sent_stoken = tx.get("stoken")
+        authorization_code = tx.get("authorization_code")
 
-        if not nuvei_resp.get("success"):
-            error_detail = nuvei_resp.get("detail", "Error Nuvei")
-            error_raw = nuvei_resp.get("raw", "")
-            
-            logger.error(f"❌ Error Nuvei: {error_detail}")
-            if error_raw:
-                logger.error(f"❌ Raw response: {error_raw[:500]}")
-            
-            raise HTTPException(
-                status_code=502,
-                detail=error_detail,
-            )
+        if not all([transaction_id, dev_reference, application_code, amount_raw]):
+            logger.warning("⚠️ Webhook con datos incompletos")
+            return {"status": "OK"}
 
-        data = nuvei_resp["data"]
-        
-        # ========================================================
-        # VALIDACIÓN ROBUSTA DE LA RESPUESTA
-        # ========================================================
-        
-        # Verificar estructura 'order'
-        if "order" not in data:
-            logger.error(f"❌ Campo 'order' faltante en respuesta Nuvei")
-            logger.error(f"📊 Respuesta completa: {data}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (campo 'order' faltante)",
-            )
-        
-        if not isinstance(data["order"], dict):
-            logger.error(f"❌ Campo 'order' no es un diccionario: {type(data['order'])}")
-            logger.error(f"📊 Valor de 'order': {data['order']}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (estructura 'order' incorrecta)",
-            )
-        
-        # Verificar 'id' dentro de 'order'
-        if "id" not in data["order"]:
-            logger.error(f"❌ Campo 'id' faltante dentro de 'order'")
-            logger.error(f"📊 Estructura 'order': {data['order']}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (ID de orden faltante)",
-            )
-        
-        # Verificar estructura 'payment'
-        if "payment" not in data:
-            logger.error(f"❌ Campo 'payment' faltante en respuesta Nuvei")
-            logger.error(f"📊 Respuesta completa: {data}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (campo 'payment' faltante)",
-            )
-        
-        if not isinstance(data["payment"], dict):
-            logger.error(f"❌ Campo 'payment' no es un diccionario: {type(data['payment'])}")
-            logger.error(f"📊 Valor de 'payment': {data['payment']}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (estructura 'payment' incorrecta)",
-            )
-        
-        # Verificar 'payment_url' dentro de 'payment'
-        if "payment_url" not in data["payment"]:
-            logger.error(f"❌ Campo 'payment_url' faltante dentro de 'payment'")
-            logger.error(f"📊 Estructura 'payment': {data['payment']}")
-            raise HTTPException(
-                status_code=502,
-                detail="Respuesta inválida de Nuvei (URL de pago faltante)",
-            )
-        
-        # Extraer valores
-        order_id = data["order"]["id"]
-        payment_url = data["payment"]["payment_url"]
+        amount = Decimal(str(amount_raw))
 
-        logger.info(f"✅ Link generado | Order ID: {order_id}")
-        logger.info(f"🔗 Payment URL: {payment_url}")
+        # Obtener Telegram ID
+        telegram_id = get_telegram_id_from_intent(db, dev_reference)
+        if not telegram_id:
+            logger.warning(f"⚠️ No se encontró telegram_id para intent {dev_reference}")
+            return {"status": "OK"}
 
-        return PaymentCreateResponse(
-            success=True,
-            order_id=order_id,
-            payment_url=payment_url,
+        # Validar STOKEN
+        expected_stoken = generate_stoken(
+            transaction_id=transaction_id,
+            application_code=application_code,
+            user_id=str(telegram_id),
+            app_key=APP_KEY,
         )
 
+        if sent_stoken != expected_stoken:
+            logger.error("❌ STOKEN INVÁLIDO - Webhook rechazado")
+            raise HTTPException(status_code=203, detail="STOKEN inválido")
+
+        # PROCESAR SEGÚN ESTADO
+        if status == "1" and status_detail == "3":
+            logger.info("🎉 PAGO APROBADO - Procesando confirmación")
+
+            result = call_bot_backend_confirm_payment(
+                db=db,
+                intent_uuid=dev_reference,
+                transaction_id=transaction_id,
+                amount=amount,
+                authorization_code=authorization_code,
+            )
+
+            if result.get("success"):
+                logger.info("✅ Pago confirmado exitosamente")
+                if not result.get("already_confirmed"):
+                    send_telegram_message(
+                        telegram_id,
+                        (
+                            "🎉 <b>¡PAGO APROBADO!</b>\n\n"
+                            f"💳 <b>Monto:</b> ${amount} USD\n"
+                            f"🧾 <b>Transacción:</b> {transaction_id}\n"
+                            f"✅ <b>Autorización:</b> {authorization_code or 'N/A'}\n\n"
+                            "✅ <b>Tu saldo ha sido actualizado</b>\n\n"
+                            "Gracias por usar <b>PITIUPI</b> 🚀"
+                        ),
+                    )
+            else:
+                send_telegram_message(
+                    telegram_id,
+                    "⚠️ <b>Error procesando pago</b>\n\nPor favor contacta a soporte."
+                )
+
+        elif status in {"0", "2", "4", "5"}:
+            status_map = {"0": "⏳ Pendiente", "2": "❌ Cancelado", "4": "❌ Rechazado", "5": "⏰ Expirado"}
+            status_text = status_map.get(status, "❓ Desconocido")
+            send_telegram_message(
+                telegram_id,
+                f"ℹ️ <b>Estado del pago: {status_text}</b>\n\nReferencia: {dev_reference}"
+            )
+
+        return {"status": "OK"}
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error inesperado: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Error interno")
+        logger.error(f"❌ Error crítico en webhook: {e}", exc_info=True)
+        return {"status": "OK"}
 
 # ============================================================
-# HEALTH CHECK
+# ENDPOINTS ADICIONALES (BOT COMPATIBILITY)
 # ============================================================
+
+@router.post("/internal/payments/create", dependencies=[Depends(verify_internal_key)])
+async def create_intent_for_bot(payload: Dict[str, Any], db: Session = Depends(get_session)):
+    """Permite al bot crear una intención de pago"""
+    t_id = payload.get("telegram_id")
+    amt = payload.get("amount")
+    user = users_service.get_user_by_telegram_id(db, str(t_id))
+    if not user: raise HTTPException(status_code=404)
+    
+    intent = payments_service.create_payment_intent_service(user.id, float(amt), db)
+    db.commit()
+    return intent
 
 @router.get("/health")
 async def health_check():
     return {
         "status": "healthy",
-        "module": "payments_api",
-        "version": "6.2",
-        "nuvei_env": ENV,
-        "spec_compliance": "Official Nuvei LinkToPay Specification",
-        "corrections_applied": [
-            "✅ country: ECU (ISO-3 según doc oficial)",
-            "✅ installments_type: 0 (según ejemplo oficial)",
-            "✅ dev_reference: timestamp-based (sin UUID)",
-            "✅ Eliminados campos no soportados (vat, taxable_amount, tax_percentage)",
-            "✅ Datos reales del usuario (no fake data)",
-            "✅ Raw error logging habilitado"
-        ]
+        "service": "nuvei_webhook_adapted",
+        "version": "6.0",
+        "timestamp": datetime.utcnow().isoformat()
     }
-
-# ============================================================
-# END OF FILE
-# ============================================================
