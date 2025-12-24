@@ -1,6 +1,6 @@
 # ============================================================
 # payments_api.py — Orquestador de LinkToPay Nuvei (Ecuador)
-# PITIUPI v6.0 — Backend Nuvei (ESPECIFICACIÓN OFICIAL)
+# PITIUPI v6.3 — Backend Nuvei + DB Integration
 # ============================================================
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,13 +10,23 @@ import os
 import logging
 import time
 import uuid
+import requests
 
 # ========================================================
-# 🔥 IMPORTS PARA BASE DE DATOS (AÑADIDOS)
+# 🔥 IMPORTS PARA BASE DE DATOS
 # ========================================================
-from database.session import SessionLocal
-from database.models.payment_intents import PaymentIntent, PaymentIntentStatus
-from database.models.user import User
+try:
+    from database.session import SessionLocal
+    from database.models.payment_intents import PaymentIntent, PaymentIntentStatus
+    from database.models.user import User
+    DB_AVAILABLE = True
+    logger_db = logging.getLogger(__name__)
+    logger_db.info("✅ Módulos de base de datos importados correctamente")
+except ImportError as e:
+    DB_AVAILABLE = False
+    logger_db = logging.getLogger(__name__)
+    logger_db.warning(f"⚠️ No se pudieron importar módulos de DB: {e}")
+    logger_db.warning("⚠️ Backend funcionará en modo stateless (sin guardar en DB)")
 # ========================================================
 
 from nuvei_client import NuveiClient
@@ -31,6 +41,7 @@ logger = logging.getLogger(__name__)
 APP_CODE = os.getenv("NUVEI_APP_CODE_SERVER")
 APP_KEY = os.getenv("NUVEI_APP_KEY_SERVER")
 ENV = os.getenv("NUVEI_ENV", "stg")
+BOT_BACKEND_URL = os.getenv("BOT_BACKEND_URL")  # URL del bot para notificaciones
 
 # Validación crítica
 if not APP_CODE or not APP_KEY:
@@ -47,6 +58,7 @@ client = NuveiClient(
 )
 
 logger.info(f"✅ NuveiClient inicializado | env={ENV}")
+logger.info(f"✅ Base de datos: {'DISPONIBLE' if DB_AVAILABLE else 'NO DISPONIBLE (modo stateless)'}")
 
 # ============================================================
 # MODELOS PYDANTIC
@@ -72,6 +84,72 @@ class PaymentCreateResponse(BaseModel):
 
 
 # ============================================================
+# FUNCIÓN HELPER: GUARDAR EN DB
+# ============================================================
+
+def save_payment_to_db(
+    telegram_id: int,
+    order_id: str,
+    amount: float,
+    email: str,
+    dev_reference: str,
+    name: str,
+    last_name: str,
+    phone_number: str,
+    fiscal_number: str
+) -> bool:
+    """
+    Intenta guardar el payment intent en la base de datos.
+    Retorna True si tuvo éxito, False en caso contrario.
+    """
+    if not DB_AVAILABLE:
+        logger.warning("⚠️ DB no disponible, no se guardará el payment intent")
+        return False
+    
+    db = SessionLocal()
+    try:
+        # Buscar usuario por telegram_id
+        user = db.query(User).filter(User.telegram_id == str(telegram_id)).first()
+        
+        if not user:
+            logger.error(f"❌ Usuario con telegram_id={telegram_id} no existe en DB")
+            return False
+        
+        # Crear payment intent
+        new_intent = PaymentIntent(
+            uuid=uuid.uuid4(),
+            user_id=user.id,
+            amount=float(amount),
+            currency="USD",
+            provider="nuvei",
+            provider_order_id=order_id,
+            status=PaymentIntentStatus.PENDING,
+            details={
+                "email": email,
+                "dev_reference": dev_reference,
+                "name": name,
+                "last_name": last_name,
+                "phone_number": phone_number,
+                "fiscal_number": fiscal_number
+            }
+        )
+        
+        db.add(new_intent)
+        db.commit()
+        db.refresh(new_intent)
+        
+        logger.info(f"💾 ✅ Payment intent guardado | order_id={order_id} | user_id={user.id}")
+        return True
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error al guardar en DB: {e}", exc_info=True)
+        return False
+    finally:
+        db.close()
+
+
+# ============================================================
 # ENDPOINT PRINCIPAL: GET /payments/pay
 # (usado desde botón de Telegram)
 # ============================================================
@@ -90,12 +168,12 @@ async def pay_redirect(
     zip_code: str = Query(default="170102", description="Código postal"),
 ):
     """
-    🔥 Flujo directo de pago (CON GUARDADO EN DB)
+    🔥 Flujo directo de pago
 
     1. Recibe datos completos del usuario
     2. Construye payload Nuvei según ESPECIFICACIÓN OFICIAL
     3. Llama a LinkToPay
-    4. 🆕 GUARDA LA ORDEN EN LA BASE DE DATOS
+    4. 💾 GUARDA LA ORDEN EN LA BASE DE DATOS (si está disponible)
     5. Redirige al checkout
     """
     try:
@@ -110,20 +188,12 @@ async def pay_redirect(
         # ========================================================
         # GENERACIÓN DE dev_reference
         # ========================================================
-        # Formato: PITIUPI-{telegram_id}-{timestamp}
-        # Sin guiones UUID, máximo 32 caracteres
-        
         dev_reference = f"PITIUPI-{telegram_id}-{int(time.time())}"
         logger.info(f"🔑 dev_reference generado: {dev_reference}")
 
         # ========================================================
         # PAYLOAD NUVEI (ESPECIFICACIÓN OFICIAL)
         # ========================================================
-        # ✅ Basado en: https://developers.paymentez.com/api/#payment-methods-linktopay
-        # ✅ country: ISO-3 ("ECU" no "EC")
-        # ✅ installments_type: 0 (según ejemplo oficial)
-        # ✅ SIN campos extra (vat, taxable_amount, tax_percentage)
-
         nuvei_payload = {
             "user": {
                 "id": str(telegram_id),
@@ -132,7 +202,6 @@ async def pay_redirect(
                 "last_name": last_name,
                 "phone_number": phone_number,
                 "fiscal_number": fiscal_number,
-                # Opcional: "fiscal_number_type": "CI" o "RUC"
             },
             "order": {
                 "dev_reference": dev_reference,
@@ -140,10 +209,10 @@ async def pay_redirect(
                 "amount": float(amount),
                 "installments_type": 0,
                 "currency": "USD",
-                "vat": 0,                    # ✅ AÑADIR
-                "inc": 0,                    # ✅ AÑADIR
-                "taxable_amount": 0,         # ✅ AÑADIR (para Ecuador)
-                "tax_percentage": 0,         # ✅ AÑADIR (0 para Ecuador)
+                "vat": 0,
+                "inc": 0,
+                "taxable_amount": 0,
+                "tax_percentage": 0,
             },
             "configuration": {
                 "partial_payment": False,
@@ -152,15 +221,13 @@ async def pay_redirect(
                 "success_url": "https://t.me/pitiupibot",
                 "failure_url": "https://t.me/pitiupibot",
                 "pending_url": "https://t.me/pitiupibot",
-                "review_url": "https://t.me/pitiupibot",  # ✅ AÑADIR SIEMPRE
-                # "callback_url": "https://tudominio.com/nuvei/callback"  # OPCIONAL
+                "review_url": "https://t.me/pitiupibot",
             },
             "billing_address": {
                 "street": street,
                 "city": city,
-                "country": "ECU",  # ✅ Correcto ISO-3
+                "country": "ECU",
                 "zip": zip_code,
-                # Opcional: "state": "Pichincha"
             },
         }
         
@@ -170,7 +237,6 @@ async def pay_redirect(
         # ========================================================
         # LLAMADA A NUVEI
         # ========================================================
-
         nuvei_resp = client.create_linktopay(nuvei_payload)
 
         if not nuvei_resp.get("success"):
@@ -191,8 +257,6 @@ async def pay_redirect(
         # ========================================================
         # VALIDACIÓN ROBUSTA DE LA RESPUESTA
         # ========================================================
-        
-        # Verificar estructura 'order'
         if "order" not in data:
             logger.error(f"❌ Campo 'order' faltante en respuesta Nuvei")
             logger.error(f"📊 Respuesta completa: {data}")
@@ -209,7 +273,6 @@ async def pay_redirect(
                 detail="Respuesta inválida de Nuvei (estructura 'order' incorrecta)",
             )
         
-        # Verificar 'id' dentro de 'order'
         if "id" not in data["order"]:
             logger.error(f"❌ Campo 'id' faltante dentro de 'order'")
             logger.error(f"📊 Estructura 'order': {data['order']}")
@@ -218,7 +281,6 @@ async def pay_redirect(
                 detail="Respuesta inválida de Nuvei (ID de orden faltante)",
             )
         
-        # Verificar estructura 'payment'
         if "payment" not in data:
             logger.error(f"❌ Campo 'payment' faltante en respuesta Nuvei")
             logger.error(f"📊 Respuesta completa: {data}")
@@ -235,7 +297,6 @@ async def pay_redirect(
                 detail="Respuesta inválida de Nuvei (estructura 'payment' incorrecta)",
             )
         
-        # Verificar 'payment_url' dentro de 'payment'
         if "payment_url" not in data["payment"]:
             logger.error(f"❌ Campo 'payment_url' faltante dentro de 'payment'")
             logger.error(f"📊 Estructura 'payment': {data['payment']}")
@@ -252,43 +313,25 @@ async def pay_redirect(
         logger.info(f"🔗 Payment URL: {payment_url}")
 
         # ========================================================
-        # 🔥 NUEVO: GUARDADO EN BASE DE DATOS (Lo que faltaba)
+        # 💾 GUARDADO EN BASE DE DATOS
         # ========================================================
-        db = SessionLocal()
-        try:
-            # Buscamos el ID interno del usuario por su telegram_id
-            user = db.query(User).filter(User.telegram_id == str(telegram_id)).first()
-            
-            if user:
-                new_intent = PaymentIntent(
-                    uuid=uuid.uuid4(),
-                    user_id=user.id,  # ID numérico de la tabla users
-                    amount=float(amount),
-                    currency="USD",
-                    provider="nuvei",
-                    provider_order_id=order_id,  # El ID de Nuvei (Q4wNK...)
-                    status=PaymentIntentStatus.PENDING,
-                    details={
-                        "email": email,
-                        "dev_reference": dev_reference,
-                        "name": name,
-                        "last_name": last_name,
-                        "phone_number": phone_number,
-                        "fiscal_number": fiscal_number
-                    }
-                )
-                db.add(new_intent)
-                db.commit()
-                logger.info(f"💾 Orden {order_id} registrada en DB para usuario {user.id}")
-            else:
-                logger.error(f"❌ No se pudo guardar el pago: Usuario {telegram_id} no existe en DB")
-        except Exception as db_err:
-            db.rollback()
-            logger.error(f"❌ Error al escribir en DB: {db_err}")
-        finally:
-            db.close()
-        # ========================================================
-
+        db_saved = save_payment_to_db(
+            telegram_id=telegram_id,
+            order_id=order_id,
+            amount=amount,
+            email=email,
+            dev_reference=dev_reference,
+            name=name,
+            last_name=last_name,
+            phone_number=phone_number,
+            fiscal_number=fiscal_number
+        )
+        
+        if db_saved:
+            logger.info(f"💾 ✅ Payment intent guardado exitosamente")
+        else:
+            logger.warning(f"⚠️ Payment intent NO guardado (continuando flujo)")
+        
         logger.info("=" * 60)
 
         return RedirectResponse(url=payment_url)
@@ -315,14 +358,12 @@ def create_payment(req: PaymentCreateRequest):
         # ========================================================
         # GENERACIÓN DE dev_reference
         # ========================================================
-        
         dev_reference = f"PITIUPI-{req.telegram_id}-{int(time.time())}"
         logger.info(f"🔑 dev_reference generado: {dev_reference}")
 
         # ========================================================
         # PAYLOAD NUVEI (ESPECIFICACIÓN OFICIAL)
         # ========================================================
-
         nuvei_payload = {
             "user": {
                 "id": str(req.telegram_id),
@@ -336,12 +377,12 @@ def create_payment(req: PaymentCreateRequest):
                 "dev_reference": dev_reference,
                 "description": "Recarga PITIUPI",
                 "amount": float(req.amount),
-                "installments_type": 0,  # ✅ Según spec oficial
+                "installments_type": 0,
                 "currency": "USD",
-                "vat": 0,                    # ✅ AÑADE (required)
-                "inc": 0,                    # ✅ AÑADE (required)
-                "taxable_amount": float(req.amount),  # ✅ AÑADE (para Ecuador)
-                "tax_percentage": 0,         # ✅ AÑADE (0 o 12 para Ecuador)
+                "vat": 0,
+                "inc": 0,
+                "taxable_amount": float(req.amount),
+                "tax_percentage": 0,
             },
             "configuration": {
                 "expiration_time": 900,
@@ -349,12 +390,12 @@ def create_payment(req: PaymentCreateRequest):
                 "success_url": "https://t.me/pitiupibot",
                 "failure_url": "https://t.me/pitiupibot",
                 "pending_url": "https://t.me/pitiupibot",
-                "review_url": "https://t.me/pitiupibot",  # ✅ AÑADE (REQUIRED!)
+                "review_url": "https://t.me/pitiupibot",
             },
             "billing_address": {
                 "street": req.street,
                 "city": req.city,
-                "country": "ECU",  # ✅ ISO-3
+                "country": "ECU",
                 "zip": req.zip_code,
             },
         }
@@ -381,8 +422,6 @@ def create_payment(req: PaymentCreateRequest):
         # ========================================================
         # VALIDACIÓN ROBUSTA DE LA RESPUESTA
         # ========================================================
-        
-        # Verificar estructura 'order'
         if "order" not in data:
             logger.error(f"❌ Campo 'order' faltante en respuesta Nuvei")
             logger.error(f"📊 Respuesta completa: {data}")
@@ -399,7 +438,6 @@ def create_payment(req: PaymentCreateRequest):
                 detail="Respuesta inválida de Nuvei (estructura 'order' incorrecta)",
             )
         
-        # Verificar 'id' dentro de 'order'
         if "id" not in data["order"]:
             logger.error(f"❌ Campo 'id' faltante dentro de 'order'")
             logger.error(f"📊 Estructura 'order': {data['order']}")
@@ -408,7 +446,6 @@ def create_payment(req: PaymentCreateRequest):
                 detail="Respuesta inválida de Nuvei (ID de orden faltante)",
             )
         
-        # Verificar estructura 'payment'
         if "payment" not in data:
             logger.error(f"❌ Campo 'payment' faltante en respuesta Nuvei")
             logger.error(f"📊 Respuesta completa: {data}")
@@ -425,7 +462,6 @@ def create_payment(req: PaymentCreateRequest):
                 detail="Respuesta inválida de Nuvei (estructura 'payment' incorrecta)",
             )
         
-        # Verificar 'payment_url' dentro de 'payment'
         if "payment_url" not in data["payment"]:
             logger.error(f"❌ Campo 'payment_url' faltante dentro de 'payment'")
             logger.error(f"📊 Estructura 'payment': {data['payment']}")
@@ -442,41 +478,24 @@ def create_payment(req: PaymentCreateRequest):
         logger.info(f"🔗 Payment URL: {payment_url}")
 
         # ========================================================
-        # 🔥 GUARDADO EN BASE DE DATOS
+        # 💾 GUARDADO EN BASE DE DATOS
         # ========================================================
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.telegram_id == str(req.telegram_id)).first()
-            
-            if user:
-                new_intent = PaymentIntent(
-                    uuid=uuid.uuid4(),
-                    user_id=user.id,
-                    amount=float(req.amount),
-                    currency="USD",
-                    provider="nuvei",
-                    provider_order_id=order_id,
-                    status=PaymentIntentStatus.PENDING,
-                    details={
-                        "email": req.email,
-                        "dev_reference": dev_reference,
-                        "name": req.name,
-                        "last_name": req.last_name,
-                        "phone_number": req.phone_number,
-                        "fiscal_number": req.fiscal_number
-                    }
-                )
-                db.add(new_intent)
-                db.commit()
-                logger.info(f"💾 Orden {order_id} registrada en DB para usuario {user.id}")
-            else:
-                logger.error(f"❌ Usuario {req.telegram_id} no existe en DB")
-        except Exception as db_err:
-            db.rollback()
-            logger.error(f"❌ Error al escribir en DB: {db_err}")
-        finally:
-            db.close()
-        # ========================================================
+        db_saved = save_payment_to_db(
+            telegram_id=req.telegram_id,
+            order_id=order_id,
+            amount=req.amount,
+            email=req.email,
+            dev_reference=dev_reference,
+            name=req.name,
+            last_name=req.last_name,
+            phone_number=req.phone_number,
+            fiscal_number=req.fiscal_number
+        )
+        
+        if db_saved:
+            logger.info(f"💾 ✅ Payment intent guardado exitosamente")
+        else:
+            logger.warning(f"⚠️ Payment intent NO guardado (continuando flujo)")
 
         return PaymentCreateResponse(
             success=True,
@@ -499,17 +518,17 @@ async def health_check():
     return {
         "status": "healthy",
         "module": "payments_api",
-        "version": "6.2",
+        "version": "6.3",
         "nuvei_env": ENV,
+        "database_mode": "CONNECTED" if DB_AVAILABLE else "STATELESS",
         "spec_compliance": "Official Nuvei LinkToPay Specification",
-        "corrections_applied": [
-            "✅ country: ECU (ISO-3 según doc oficial)",
-            "✅ installments_type: 0 (según ejemplo oficial)",
-            "✅ dev_reference: timestamp-based (sin UUID)",
-            "✅ Eliminados campos no soportados (vat, taxable_amount, tax_percentage)",
-            "✅ Datos reales del usuario (no fake data)",
-            "✅ Raw error logging habilitado",
-            "✅ Guardado en DB antes del redirect (v6.2+)"
+        "features": [
+            "✅ LinkToPay creation",
+            "✅ Robust response validation",
+            "✅ DB integration (optional)" if DB_AVAILABLE else "⚠️ DB not available (stateless mode)",
+            "✅ Error logging with raw responses",
+            "✅ ISO-3 country codes (ECU)",
+            "✅ Timestamp-based dev_reference"
         ]
     }
 
