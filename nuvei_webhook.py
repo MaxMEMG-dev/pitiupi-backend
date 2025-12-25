@@ -1,16 +1,16 @@
 # ============================================================
 # nuvei_webhook.py — Receptor de Webhooks Nuvei (Ecuador)
-# PITIUPI v6.8 — FIX: NameError PaymentIntentStatus
+# PITIUPI v6.9 — FIX: balance_available & NotNull constraints
 # ============================================================
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request
 import hashlib
 import logging
 import os
 import requests
-from datetime import datetime
 from decimal import Decimal
-from typing import Dict, Any, Optional
+from typing import Dict, Any
+from sqlalchemy import text
 
 router = APIRouter(tags=["Nuvei"])
 logger = logging.getLogger(__name__)
@@ -19,14 +19,9 @@ logger = logging.getLogger(__name__)
 HAS_DB = False
 try:
     from database.session import get_session
-    from database.services import payments_service
-    from database.models.payment_intents import PaymentIntentStatus
     HAS_DB = True
 except ImportError:
-    # Si no hay base de datos, creamos una clase vacía para que el código no explote
-    class PaymentIntentStatus:
-        COMPLETED = "completed"
-    logger.warning("⚠️ No se pudieron importar módulos de DB: Funcionando en modo Proxy")
+    logger.warning("⚠️ No se pudo importar la sesión de DB: Funcionando en modo Proxy/Local")
 
 # Variables de entorno
 APP_KEY = os.getenv("NUVEI_APP_KEY_SERVER")
@@ -40,12 +35,13 @@ def generate_stoken(transaction_id: str, application_code: str, user_id: str, ap
     raw = f"{transaction_id}_{application_code}_{user_id}_{app_key}"
     return hashlib.md5(raw.encode()).hexdigest()
 
-def send_telegram_notification(chat_id: int, text: str):
+def send_telegram_notification(chat_id: int, text_msg: str):
     if not BOT_TOKEN: return
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=5)
-    except: pass
+        requests.post(url, json={"chat_id": chat_id, "text": text_msg, "parse_mode": "HTML"}, timeout=5)
+    except Exception as e:
+        logger.error(f"❌ Error enviando notificación: {e}")
 
 # --- WEBHOOK ---
 
@@ -56,64 +52,105 @@ async def nuvei_callback(request: Request):
         tx = payload.get("transaction", {})
         
         transaction_id = tx.get("id")
-        dev_reference = tx.get("dev_reference") 
+        dev_reference = tx.get("dev_reference") # Formato esperado: PITIUPI-TELEGRAMID-UUID
         app_code = tx.get("application_code")
         status = str(tx.get("status"))
         status_detail = str(tx.get("status_detail"))
         amount = Decimal(str(tx.get("amount", "0")))
         sent_stoken = tx.get("stoken")
 
-        # Extraer Telegram ID de la referencia (Formato: PITIUPI-ID-...)
-        # Si tu referencia es distinta, ajusta este split
+        # Extraer Telegram ID
         try:
             telegram_id = dev_reference.split("-")[1]
         except:
             telegram_id = "0"
 
-        # 1. Validar Firma
+        # 1. Validar Firma de Seguridad
         expected = generate_stoken(transaction_id, app_code, telegram_id, APP_KEY)
         if sent_stoken != expected:
-            logger.error(f"❌ Firma inválida")
+            logger.error(f"❌ Firma inválida para transacción {transaction_id}")
             return {"status": "OK"}
 
-        # 2. Procesar Pago Aprobado
+        # 2. Procesar solo si el pago es exitoso (Status 1, Detail 3)
         if status == "1" and status_detail == "3":
-            logger.info(f"💰 Pago Aprobado: {amount} USD")
+            logger.info(f"💰 PAGO APROBADO: {amount} USD (User: {telegram_id})")
 
             if HAS_DB:
-                # Caso Render (DB Local)
                 db = get_session()
                 try:
-                    payments_service.confirm_payment_intent_service(
-                        intent_uuid=dev_reference,
-                        provider_tx_id=transaction_id,
-                        amount_received=float(amount),
-                        session=db
+                    # A. Actualizar Saldo (Usando balance_available y balance_total)
+                    db.execute(
+                        text("""
+                            UPDATE users 
+                            SET balance_available = CAST(balance_available AS NUMERIC) + :amt,
+                                balance_total = CAST(balance_total AS NUMERIC) + :amt,
+                                updated_at = NOW()
+                            WHERE CAST(telegram_id AS VARCHAR) = :tid
+                        """),
+                        {"amt": float(amount), "tid": str(telegram_id)}
+                    )
+
+                    # B. Registrar/Actualizar la intención de pago
+                    # Se incluye 'details', 'created_at' y 'expires_at' para evitar NotNullViolation
+                    db.execute(
+                        text("""
+                            INSERT INTO payment_intents (
+                                uuid, user_id, amount, amount_received, status, 
+                                provider_order_id, provider, currency, details,
+                                created_at, updated_at, expires_at
+                            )
+                            VALUES (
+                                gen_random_uuid(), 
+                                (SELECT id FROM users WHERE CAST(telegram_id AS VARCHAR) = :tid), 
+                                :amt, :amt, 'COMPLETED', :oid, 'nuvei', 'USD', '{}',
+                                NOW(), NOW(), NOW() + INTERVAL '24 hours'
+                            )
+                            ON CONFLICT (provider_order_id) DO UPDATE SET 
+                                status = 'COMPLETED',
+                                updated_at = NOW()
+                        """),
+                        {
+                            "tid": str(telegram_id),
+                            "amt": float(amount),
+                            "oid": str(transaction_id)
+                        }
                     )
                     db.commit()
+                    logger.info(f"✅ DB actualizada exitosamente para usuario {telegram_id}")
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"❌ Error registrando en DB: {e}")
                 finally:
                     db.close()
-            elif BOT_BACKEND_URL:
-                # Caso Local (Delegar al Bot)
-                requests.post(
-                    f"{BOT_BACKEND_URL}/payments/confirm",
-                    json={
-                        "intent_uuid": dev_reference,
-                        "provider_tx_id": transaction_id,
-                        "amount_received": float(amount)
-                    },
-                    headers={"X-Internal-API-Key": INTERNAL_API_KEY},
-                    timeout=10
-                )
 
-            send_telegram_notification(int(telegram_id), f"✅ <b>¡Pago Recibido!</b>\nHas recargado ${amount} USD.")
+            elif BOT_BACKEND_URL:
+                # Si no hay DB (Local), delegamos al Bot
+                try:
+                    requests.post(
+                        f"{BOT_BACKEND_URL}/payments/confirm",
+                        json={
+                            "intent_uuid": dev_reference,
+                            "provider_tx_id": transaction_id,
+                            "amount_received": float(amount)
+                        },
+                        headers={"X-Internal-API-Key": INTERNAL_API_KEY},
+                        timeout=10
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Error delegando al bot: {e}")
+
+            # 3. Notificar al usuario por Telegram
+            send_telegram_notification(
+                int(telegram_id), 
+                f"✅ <b>¡Recarga Exitosa!</b>\n\nSe han acreditado <b>${amount} USD</b> a tu cuenta.\n¡Gracias por tu confianza!"
+            )
 
         return {"status": "OK"}
 
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.error(f"❌ Error crítico en webhook: {e}")
         return {"status": "OK"}
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "db": HAS_DB}
+    return {"status": "online", "database_connected": HAS_DB}
