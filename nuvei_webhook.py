@@ -1,6 +1,6 @@
 # ============================================================
 # nuvei_webhook.py — Receptor de Webhooks Nuvei (Ecuador)
-# PITIUPI v6.9 — FIX: balance_available & NotNull constraints
+# PITIUPI v6.10 — FIX: telegram_id casting corregido
 # ============================================================
 
 from fastapi import APIRouter, Request
@@ -78,19 +78,33 @@ async def nuvei_callback(request: Request):
             if HAS_DB:
                 db = get_session()
                 try:
+                    # Validar existencia del usuario primero
+                    user_res = db.execute(
+                        text("SELECT id FROM users WHERE telegram_id = :tid"), 
+                        {"tid": int(telegram_id)}
+                    ).fetchone()
+
+                    if not user_res:
+                        logger.error(f"❌ USUARIO NO ENCONTRADO: El telegram_id {telegram_id} no existe en la DB. Abortando registro de pago.")
+                        db.close()
+                        return {"status": "OK"}
+
+                    user_id = user_res[0]
+                    logger.info(f"✅ Usuario validado correctamente (ID interno: {user_id})")
+
                     # A. Actualizar Saldo (Usando balance_available y balance_total)
                     db.execute(
                         text("""
                             UPDATE users 
-                            SET balance_available = CAST(balance_available AS NUMERIC) + :amt,
-                                balance_total = CAST(balance_total AS NUMERIC) + :amt,
+                            SET balance_available = balance_available + :amt,
+                                balance_total = balance_total + :amt,
                                 updated_at = NOW()
-                            WHERE CAST(telegram_id AS VARCHAR) = :tid
+                            WHERE telegram_id = :tid
                         """),
-                        {"amt": float(amount), "tid": str(telegram_id)}
+                        {"amt": float(amount), "tid": int(telegram_id)}
                     )
 
-                    # B. Registrar/Actualizar la intención de pago
+                    # B. Registrar/Actualizar la intención de pago usando el user_id validado
                     # Se incluye 'details', 'created_at' y 'expires_at' para evitar NotNullViolation
                     db.execute(
                         text("""
@@ -101,16 +115,16 @@ async def nuvei_callback(request: Request):
                             )
                             VALUES (
                                 gen_random_uuid(), 
-                                (SELECT id FROM users WHERE CAST(telegram_id AS VARCHAR) = :tid), 
+                                :uid, 
                                 :amt, :amt, 'COMPLETED', :oid, 'nuvei', 'USD', '{}',
                                 NOW(), NOW(), NOW() + INTERVAL '24 hours'
                             )
                             ON CONFLICT (provider_order_id) DO UPDATE SET 
                                 status = 'COMPLETED',
-                                updated_at = NOW()
+                                updated_at = NOW();
                         """),
                         {
-                            "tid": str(telegram_id),
+                            "uid": user_id,
                             "amt": float(amount),
                             "oid": str(transaction_id)
                         }
