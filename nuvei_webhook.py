@@ -78,34 +78,36 @@ async def nuvei_callback(request: Request):
             if HAS_DB:
                 db = get_session()
                 try:
+                    # 🔥 CORRECCIÓN: Convertir telegram_id a str para que coincida con VARCHAR en DB
+                    str_tid = str(telegram_id)
+                    
                     # Validar existencia del usuario primero
                     user_res = db.execute(
                         text("SELECT id FROM users WHERE telegram_id = :tid"), 
-                        {"tid": int(telegram_id)}
+                        {"tid": str_tid}
                     ).fetchone()
 
                     if not user_res:
-                        logger.error(f"❌ USUARIO NO ENCONTRADO: El telegram_id {telegram_id} no existe en la DB. Abortando registro de pago.")
-                        db.close()
+                        logger.error(f"❌ USUARIO NO ENCONTRADO: El telegram_id {str_tid} no existe en la DB.")
                         return {"status": "OK"}
 
                     user_id = user_res[0]
                     logger.info(f"✅ Usuario validado correctamente (ID interno: {user_id})")
 
-                    # A. Actualizar Saldo (Usando balance_available y balance_total)
+                    # A. Actualizar Saldo
                     db.execute(
                         text("""
                             UPDATE users 
                             SET balance_available = balance_available + :amt,
                                 balance_total = balance_total + :amt,
                                 updated_at = NOW()
-                            WHERE telegram_id = :tid
+                            WHERE id = :uid
                         """),
-                        {"amt": float(amount), "tid": int(telegram_id)}
+                        {"amt": float(amount), "uid": user_id}
                     )
 
-                    # B. Registrar/Actualizar la intención de pago usando el user_id validado
-                    # Se incluye 'details', 'created_at' y 'expires_at' para evitar NotNullViolation
+                    # B. Registrar/Actualizar intención de pago
+                    # 🔥 CORRECCIÓN: Se usa json.dumps para el campo 'details' (JSONB en Postgres)
                     db.execute(
                         text("""
                             INSERT INTO payment_intents (
@@ -116,7 +118,7 @@ async def nuvei_callback(request: Request):
                             VALUES (
                                 gen_random_uuid(), 
                                 :uid, 
-                                :amt, :amt, 'COMPLETED', :oid, 'nuvei', 'USD', '{}',
+                                :amt, :amt, 'COMPLETED', :oid, 'nuvei', 'USD', :details,
                                 NOW(), NOW(), NOW() + INTERVAL '24 hours'
                             )
                             ON CONFLICT (provider_order_id) DO UPDATE SET 
@@ -126,11 +128,14 @@ async def nuvei_callback(request: Request):
                         {
                             "uid": user_id,
                             "amt": float(amount),
-                            "oid": str(transaction_id)
+                            "oid": str(transaction_id),
+                            "details": json.dumps({"source": "nuvei_webhook", "ip": "callback"})
                         }
                     )
+                    
                     db.commit()
-                    logger.info(f"✅ DB actualizada exitosamente para usuario {telegram_id}")
+                    logger.info(f"✅ DB actualizada exitosamente para usuario {str_tid}. Saldo incrementado en ${amount}")
+                    
                 except Exception as e:
                     db.rollback()
                     logger.error(f"❌ Error registrando en DB: {e}")
@@ -138,7 +143,7 @@ async def nuvei_callback(request: Request):
                     db.close()
 
             elif BOT_BACKEND_URL:
-                # Si no hay DB (Local), delegamos al Bot
+                # Si no hay DB (Modo Stateless), delegamos al Bot
                 try:
                     requests.post(
                         f"{BOT_BACKEND_URL}/payments/confirm",
@@ -168,4 +173,3 @@ async def nuvei_callback(request: Request):
 @router.get("/health")
 async def health():
     return {"status": "online", "database_connected": HAS_DB}
-
