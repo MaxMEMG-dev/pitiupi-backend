@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 import hashlib
 import logging
 import os
+import json
 import requests
 from decimal import Decimal
 from typing import Dict, Any
@@ -173,3 +174,4 @@ async def nuvei_callback(request: Request):
 @router.get("/health")
 async def health():
     return {"status": "online", "database_connected": HAS_DB}
+
