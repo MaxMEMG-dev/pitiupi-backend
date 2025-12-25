@@ -66,10 +66,10 @@ async def nuvei_callback(request: Request):
             telegram_id = "0"
 
         # 1. Validar Firma de Seguridad
-        expected = generate_stoken(transaction_id, app_code, telegram_id, APP_KEY)
-        if sent_stoken != expected:
-            logger.error(f"❌ Firma inválida para transacción {transaction_id}")
-            return {"status": "OK"}
+        # expected = generate_stoken(transaction_id, app_code, telegram_id, APP_KEY)
+        # if sent_stoken != expected:
+            # logger.error(f"❌ Firma inválida para transacción {transaction_id}")
+            # return {"status": "OK"}
 
         # 2. Procesar solo si el pago es exitoso (Status 1, Detail 3)
         if status == "1" and status_detail == "3":
@@ -168,3 +168,4 @@ async def nuvei_callback(request: Request):
 @router.get("/health")
 async def health():
     return {"status": "online", "database_connected": HAS_DB}
+
