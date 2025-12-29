@@ -102,7 +102,7 @@ class User(Base, TimestampMixin):
     # ✅ AGREGADO: Relación con WithdrawalRequests (V6.1 AML)
     withdrawal_requests = relationship(
         "WithdrawalRequest",
-        foreign_keys="WithdrawalRequest.user_id",  # ← AÑADE ESTA LÍNEA
+        foreign_keys="[WithdrawalRequest.user_id]",  
         back_populates="user",
         cascade="save-update, merge",
         lazy="dynamic",
