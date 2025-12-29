@@ -1,7 +1,8 @@
 # ============================================================
 # database/models/user.py
-# Modelo principal de usuario PITIUPI v6.1 AML
-# ✅ ACTUALIZADO: Separación balance_recharge / balance_withdrawable
+# Modelo principal de usuario PITIUPI v6.0
+# ✅ CORREGIDO: Lazy loading para evitar imports circulares
+# ✅ AGREGADO: Relación withdrawal_requests para V6.1 AML
 # ============================================================
 
 import uuid
@@ -29,11 +30,6 @@ class User(Base, TimestampMixin):
     """
     Modelo principal de usuario. 
     Single Source of Truth para la identidad y el estado financiero actual.
-    
-    ✅ V6.1 AML: Separación de balances para cumplimiento regulatorio
-    - balance_recharge: Dinero depositado (NO retirable hasta ganar)
-    - balance_withdrawable: Dinero ganado en retos (SÍ retirable)
-    - balance_available: Propiedad calculada (recharge + withdrawable)
     """
     __tablename__ = "users"
 
@@ -57,36 +53,16 @@ class User(Base, TimestampMixin):
     lang = Column(String(2), default="es", nullable=False)  # 'es' o 'en'
 
     # --------------------------------------------------------
-    # Balance V6.1 AML (Mantenido por users_service mediante FOR UPDATE)
+    # Balance (Mantenido por users_service mediante FOR UPDATE)
     # --------------------------------------------------------
-    # ✅ NUEVO: Separación de saldos para cumplimiento AML
-    balance_recharge = Column(
-        Numeric(18, 2), 
-        default=Decimal("0.00"), 
-        nullable=False,
-        comment="Depósitos directos - NO retirable hasta ganar retos"
-    )
     
-    balance_withdrawable = Column(
-        Numeric(18, 2), 
-        default=Decimal("0.00"), 
-        nullable=False,
-        comment="Ganancias de retos - SÍ retirable"
-    )
-    
-    balance_locked = Column(
-        Numeric(18, 2), 
-        default=Decimal("0.00"), 
-        nullable=False,
-        comment="Dinero bloqueado en retos activos o retiros pendientes"
-    )
-    
-    balance_total = Column(
-        Numeric(18, 2), 
-        default=Decimal("0.00"), 
-        nullable=False,
-        comment="Suma total: recharge + withdrawable + locked"
-    )
+    # balance_recharge: Dinero depositado (debe jugarse para ser retirable)
+    balance_recharge = Column(Numeric(18, 2), default=Decimal("0.00"), nullable=False)
+    # balance_withdrawable: Dinero retirable (ganancias de retos)
+    balance_withdrawable = Column(Numeric(18, 2), default=Decimal("0.00"), nullable=False)
+    balance_locked = Column(Numeric(18, 2), default=Decimal("0.00"), nullable=False)
+    # El total ahora es la suma de los tres
+    balance_total = Column(Numeric(18, 2), default=Decimal("0.00"), nullable=False)
 
     # --------------------------------------------------------
     # Datos de Registro / Onboarding (Milestone #1)
@@ -119,48 +95,49 @@ class User(Base, TimestampMixin):
     last_active_at = Column(DateTime(timezone=True), nullable=True)
 
     # --------------------------------------------------------
-    # Relaciones (Ajustadas para V6.1 - Lazy Loading)
+    # Relaciones (Ajustadas para V6 - Lazy Loading)
     # --------------------------------------------------------
     # ✅ CORREGIDO: Usar string reference + lazy='dynamic' para evitar circular imports
-    transactions = relationship(
-        "Transaction",
+    
+    # ✅ AGREGADO: Relación con WithdrawalRequests (V6.1 AML)
+    withdrawal_requests = relationship(
+        "WithdrawalRequest",
         back_populates="user",
         cascade="save-update, merge",
-        lazy="dynamic",
-        order_by="Transaction.created_at.desc()"
+        lazy="dynamic",  # ✅ Carga bajo demanda
+        order_by="WithdrawalRequest.created_at.desc()"  # ✅ Ordenar por más reciente
     )
     
-    # ✅ Relación con PaymentIntents
+    transactions = relationship(
+        "Transaction",  # String reference - resuelto en runtime
+        back_populates="user",
+        cascade="save-update, merge",  # V6: No borrar ledger
+        lazy="dynamic",  # ✅ Evita cargar todas las transacciones automáticamente
+        order_by="Transaction.created_at.desc()"  # ✅ Ordenar por más reciente
+    )
+    
+    # ✅ AGREGADO: Relación con PaymentIntents (lazy loading)
     payment_intents = relationship(
         "PaymentIntent",
         back_populates="user",
         cascade="all, delete-orphan",
-        lazy="dynamic",
+        lazy="dynamic",  # ✅ Carga bajo demanda
         order_by="PaymentIntent.created_at.desc()"
     )
     
-    # ✅ Relación con WithdrawalRequests
-    withdrawal_requests = relationship(
-        "WithdrawalRequest",
-        foreign_keys="WithdrawalRequest.user_id",
-        back_populates="user",
-        lazy="dynamic",
-        order_by="WithdrawalRequest.created_at.desc()"
-    )
-    
-    # Relaciones de retos
+    # Relaciones de retos (lazy loading)
     challenges_as_challenger = relationship(
         "Challenge",
         foreign_keys="Challenge.challenger_id",
         back_populates="challenger",
-        lazy="dynamic"
+        lazy="dynamic"  # ✅ Evita N+1 queries
     )
 
     challenges_as_opponent = relationship(
         "Challenge",
         foreign_keys="Challenge.opponent_id",
         back_populates="opponent",
-        lazy="dynamic"
+        lazy="dynamic"  # ✅ Evita N+1 queries
     )
 
     # --------------------------------------------------------
@@ -172,40 +149,59 @@ class User(Base, TimestampMixin):
         Index("idx_users_status", "status"),
         Index("idx_users_lang", "lang"),
         Index("idx_users_email", "email", unique=True),
-        Index("idx_users_status_lang", "status", "lang"),
-        Index("idx_users_balance_withdrawable", "balance_withdrawable"),  # ✅ Nuevo
-        Index("idx_users_balance_recharge", "balance_recharge"),  # ✅ Nuevo
+        Index("idx_users_status_lang", "status", "lang"),  # ✅ Query común
     )
 
     # --------------------------------------------------------
-    # Propiedades Calculadas V6.1 AML
+    # Validaciones y Helpers
     # --------------------------------------------------------
-    
+    @validates("balance_recharge", "balance_withdrawable", "balance_locked")
+    def validate_balance(self, key, value):
+        if value is not None and Decimal(str(value)) < Decimal("0.00"):
+            raise ValueError(f"{key} no puede ser negativo")
+        return value
+
+    @validates("lang")
+    def validate_lang(self, key, value):
+        if value not in ["es", "en"]:
+            raise ValueError("Idioma debe ser 'es' o 'en'")
+        return value
+
+    def recalculate_total(self):
+        """Helper para actualizar balance_total antes de commit."""
+        self.balance_total = self.balance_recharge + self.balance_withdrawable + self.balance_locked
+
     @property
-    def balance_available(self) -> Decimal:
-        """
-        ✅ V6.1 AML: Balance disponible para jugar.
-        
-        Este es el dinero que el usuario puede usar para crear/aceptar retos.
-        Suma de:
-        - balance_recharge (depósitos)
-        - balance_withdrawable (ganancias)
-        
-        NO incluye balance_locked (está en uso).
-        
-        Returns:
-            Decimal: Total disponible para apostar
-        """
+    def balance_available(self):
+        """Propiedad calculada para compatibilidad con código existente."""
         return self.balance_recharge + self.balance_withdrawable
+
+    def to_dict(self):
+        """Serialización para API interna."""
+        return {
+            "uuid": str(self.uuid),
+            "telegram_id": self.telegram_id,
+            "telegram_username": self.telegram_username,
+            "status": self.status,
+            "lang": self.lang,
+            "balance": {
+                "recharge": float(self.balance_recharge),
+                "withdrawable": float(self.balance_withdrawable),
+                "locked": float(self.balance_locked),
+                "total": float(self.balance_total)
+            },
+            "is_profile_complete": self.is_profile_complete,
+            "email": self.email,
+            "phone": self.phone,
+            "country": self.country,
+            "city": self.city
+        }
 
     @property
     def is_profile_complete(self) -> bool:
         """
         Lógica central de Onboarding V6.
         Define si el usuario puede operar/pagar.
-        
-        Returns:
-            bool: True si todos los campos requeridos están completos
         """
         required = [
             self.telegram_first_name,
@@ -220,12 +216,7 @@ class User(Base, TimestampMixin):
     
     @property
     def display_name(self) -> str:
-        """
-        Nombre para mostrar en UI.
-        
-        Returns:
-            str: Nombre completo, username o ID
-        """
+        """Nombre para mostrar en UI"""
         if self.telegram_first_name:
             full_name = self.telegram_first_name
             if self.telegram_last_name:
@@ -233,135 +224,8 @@ class User(Base, TimestampMixin):
             return full_name
         return self.telegram_username or f"Usuario {self.telegram_id}"
 
-    # --------------------------------------------------------
-    # Validaciones V6.1 AML
-    # --------------------------------------------------------
-    
-    @validates("balance_recharge", "balance_withdrawable", "balance_locked")
-    def validate_balance(self, key, value):
-        """
-        ✅ V6.1: Validar que ningún balance sea negativo.
-        
-        Args:
-            key: Nombre del campo
-            value: Valor a validar
-            
-        Returns:
-            Decimal: Valor validado
-            
-        Raises:
-            ValueError: Si el balance es negativo
-        """
-        if value is not None and Decimal(str(value)) < Decimal("0.00"):
-            raise ValueError(f"{key} no puede ser negativo. Valor recibido: {value}")
-        return value
-
-    @validates("lang")
-    def validate_lang(self, key, value):
-        """
-        Valida que el idioma sea válido.
-        
-        Args:
-            key: Nombre del campo
-            value: Valor a validar
-            
-        Returns:
-            str: Idioma validado
-            
-        Raises:
-            ValueError: Si el idioma no es 'es' o 'en'
-        """
-        if value not in ["es", "en"]:
-            raise ValueError(f"Idioma debe ser 'es' o 'en'. Valor recibido: {value}")
-        return value
-
-    # --------------------------------------------------------
-    # Métodos Auxiliares V6.1 AML
-    # --------------------------------------------------------
-    
-    def recalculate_total(self):
-        """
-        ✅ V6.1 AML: Recalcula balance_total.
-        
-        IMPORTANTE: Llamar este método antes de commit() cuando se modifiquen
-        balance_recharge, balance_withdrawable o balance_locked.
-        
-        Formula:
-            balance_total = balance_recharge + balance_withdrawable + balance_locked
-        
-        Example:
-            user.balance_recharge += 10
-            user.recalculate_total()
-            session.commit()
-        """
-        self.balance_total = (
-            self.balance_recharge + 
-            self.balance_withdrawable + 
-            self.balance_locked
-        )
-
-    def to_dict(self):
-        """
-        ✅ V6.1 AML: Serialización para API interna con balances separados.
-        
-        Returns:
-            dict: Representación del usuario con todos sus balances
-        """
-        return {
-            "uuid": str(self.uuid),
-            "telegram_id": self.telegram_id,
-            "telegram_username": self.telegram_username,
-            "telegram_first_name": self.telegram_first_name,
-            "telegram_last_name": self.telegram_last_name,
-            "display_name": self.display_name,
-            "status": self.status,
-            "lang": self.lang,
-            "balance": {
-                "recharge": float(self.balance_recharge),        # ✅ NO retirable
-                "withdrawable": float(self.balance_withdrawable), # ✅ SÍ retirable
-                "available": float(self.balance_available),      # ✅ Calculado
-                "locked": float(self.balance_locked),
-                "total": float(self.balance_total)
-            },
-            "profile": {
-                "is_complete": self.is_profile_complete,
-                "email": self.email,
-                "phone": self.phone,
-                "country": self.country,
-                "city": self.city,
-                "document_number": self.document_number,
-                "birthdate": self.birthdate
-            },
-            "onboarding": {
-                "terms_accepted": self.terms_accepted,
-                "terms_accepted_at": self.terms_accepted_at.isoformat() if self.terms_accepted_at else None,
-                "first_deposit_completed": self.first_deposit_completed,
-                "first_deposit_at": self.first_deposit_at.isoformat() if self.first_deposit_at else None
-            },
-            "stats": {
-                "total_deposits": float(self.total_deposits),
-                "total_wins": float(self.total_wins),
-                "kyc_status": self.kyc_status
-            },
-            "timestamps": {
-                "created_at": self.created_at.isoformat() if self.created_at else None,
-                "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-                "last_active_at": self.last_active_at.isoformat() if self.last_active_at else None
-            }
-        }
-
     def __repr__(self) -> str:
-        """
-        Representación string del usuario para debugging.
-        
-        Returns:
-            str: Representación del objeto User
-        """
         return (
-            f"<User(id={self.id}, "
-            f"telegram_id={self.telegram_id}, "
-            f"status={self.status}, "
-            f"lang={self.lang}, "
-            f"balance_available={self.balance_available}, "
-            f"balance_withdrawable={self.balance_withdrawable})>"
+            f"<User(id={self.id}, telegram_id={self.telegram_id}, "
+            f"status={self.status}, lang={self.lang})>"
         )
