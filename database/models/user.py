@@ -102,10 +102,11 @@ class User(Base, TimestampMixin):
     # ✅ AGREGADO: Relación con WithdrawalRequests (V6.1 AML)
     withdrawal_requests = relationship(
         "WithdrawalRequest",
+        foreign_keys="WithdrawalRequest.user_id",  # ← AÑADE ESTA LÍNEA
         back_populates="user",
         cascade="save-update, merge",
-        lazy="dynamic",  # ✅ Carga bajo demanda
-        order_by="WithdrawalRequest.created_at.desc()"  # ✅ Ordenar por más reciente
+        lazy="dynamic",
+        order_by="WithdrawalRequest.created_at.desc()"
     )
     
     transactions = relationship(
