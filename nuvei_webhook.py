@@ -128,7 +128,7 @@ def nuvei_callback(request: Request):
     """
     try:
         # Parsear payload
-        payload = request.json() if hasattr(request, 'json') else {}
+        payload = await request.json() 
         tx = payload.get("transaction", {})
         
         # Extraer datos de la transacción
@@ -376,3 +376,4 @@ def health():
             "signature_validation": bool(APP_KEY)
         }
     }
+
