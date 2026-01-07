@@ -105,6 +105,7 @@ def configure_relationships():
     try:
         # ✅ Importar WithdrawalRequest ahora que User ya está importado
         from database.models.withdrawals import WithdrawalRequest
+        from database.models.challenges import Challenge
         
         # Configurar relación en User
         User.withdrawal_requests = relationship(
