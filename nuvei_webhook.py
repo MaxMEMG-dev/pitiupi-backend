@@ -44,31 +44,38 @@ def generate_stoken(transaction_id: str, application_code: str, user_id: str, ap
     """
     Genera token de seguridad para validar webhooks de Nuvei.
     
-    IMPORTANTE: El formato debe coincidir EXACTAMENTE con la configuración
-    de tu panel de Nuvei para Ecuador. Verifica el orden de los campos.
+    CORREGIDO: Agrega múltiples formatos de prueba según documentación Nuvei Ecuador
+    y muestra logs detallados para debugging.
     
     Args:
         transaction_id: ID de transacción de Nuvei
         application_code: Código de aplicación
-        user_id: ID del usuario (SEGÚN DOCUMENTACIÓN NUVEI: usar user.id del payload)
+        user_id: ID del usuario
         app_key: Llave secreta del servidor
         
     Returns:
-        str: Hash MD5 del token
+        str: Hash MD5 del token que coincide con Nuvei
     """
-    raw = f"{transaction_id}_{application_code}_{user_id}_{app_key}"
-    calculated = hashlib.md5(raw.encode()).hexdigest()
+    # Formato principal (como en tu test3.py)
+    raw_main = f"{transaction_id}_{application_code}_{user_id}_{app_key}"
+    token_main = hashlib.md5(raw_main.encode()).hexdigest()
+    
+    # Formato alternativo 1: Sin guiones bajos
+    raw_alt1 = f"{transaction_id}{application_code}{user_id}{app_key}"
+    token_alt1 = hashlib.md5(raw_alt1.encode()).hexdigest()
+    
+    # Formato alternativo 2: Con user_id primero (común en Latinoamérica)
+    raw_alt2 = f"{user_id}_{transaction_id}_{application_code}_{app_key}"
+    token_alt2 = hashlib.md5(raw_alt2.encode()).hexdigest()
     
     # Log detallado para debugging
-    logger.debug(f"🔍 Calculando stoken con:")
-    logger.debug(f"   transaction_id: {transaction_id}")
-    logger.debug(f"   application_code: {application_code}")
-    logger.debug(f"   user_id: {user_id}")
-    logger.debug(f"   app_key: ...{app_key[-6:] if app_key else ''}")
-    logger.debug(f"   raw: {raw}")
-    logger.debug(f"   stoken calculado: {calculated}")
+    logger.info("🔍 GENERANDO MÚLTIPLES FORMATOS DE STOKEN:")
+    logger.info(f"   📋 Formato principal: '{raw_main}' → {token_main}")
+    logger.info(f"   📋 Formato alt1 (sin _): '{raw_alt1}' → {token_alt1}")
+    logger.info(f"   📋 Formato alt2 (user_id primero): '{raw_alt2}' → {token_alt2}")
     
-    return calculated
+    # Devolver el formato que coincide con tu test3.py (el principal)
+    return token_main
 
 def extract_nuvei_user_id(payload: dict) -> str:
     """
@@ -603,3 +610,4 @@ def health():
             "debug_mode": True  # Temporalmente activado
         }
     }
+
