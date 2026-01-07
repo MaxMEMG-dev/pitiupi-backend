@@ -50,14 +50,25 @@ def generate_stoken(transaction_id: str, application_code: str, user_id: str, ap
     Args:
         transaction_id: ID de transacción de Nuvei
         application_code: Código de aplicación
-        user_id: ID del usuario
+        user_id: ID del usuario (SEGÚN DOCUMENTACIÓN NUVEI: usar user.id del payload)
         app_key: Llave secreta del servidor
         
     Returns:
         str: Hash MD5 del token
     """
     raw = f"{transaction_id}_{application_code}_{user_id}_{app_key}"
-    return hashlib.md5(raw.encode()).hexdigest()
+    calculated = hashlib.md5(raw.encode()).hexdigest()
+    
+    # Log detallado para debugging
+    logger.debug(f"🔍 Calculando stoken con:")
+    logger.debug(f"   transaction_id: {transaction_id}")
+    logger.debug(f"   application_code: {application_code}")
+    logger.debug(f"   user_id: {user_id}")
+    logger.debug(f"   app_key: ...{app_key[-6:] if app_key else ''}")
+    logger.debug(f"   raw: {raw}")
+    logger.debug(f"   stoken calculado: {calculated}")
+    
+    return calculated
 
 
 def send_telegram_notification(chat_id: int, text_msg: str):
@@ -490,3 +501,4 @@ def health():
             "signature_validation": bool(APP_KEY)
         }
     }
+
