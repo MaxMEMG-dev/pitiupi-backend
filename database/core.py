@@ -81,7 +81,7 @@ def create_sync_engine() -> Engine:
         echo=os.getenv("SQL_ECHO", "false").lower() == "true",
         future=True,
         connect_args={
-            "sslmode": "require",
+            "sslmode": "prefer",
             "connect_timeout": 10
         }
     )
