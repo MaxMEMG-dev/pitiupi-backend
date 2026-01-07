@@ -16,7 +16,6 @@ from database.models.base import Base, TimestampMixin
 from database.types import UUIDType, JSONType
 from database.models.user import User
 from database.models.transactions import Transaction
-from database.models.withdrawals import WithdrawalRequest
 
 
 # ============================================================
