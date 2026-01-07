@@ -61,6 +61,7 @@ try:
     from database.models.user import User
     from database.models.transactions import Transaction
     from database.models.payment_intents import PaymentIntent
+    from database.models.challenges import Challenge
     
     logger.info("✅ Modelos principales importados correctamente")
     
