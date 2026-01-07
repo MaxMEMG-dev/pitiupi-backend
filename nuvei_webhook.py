@@ -1,6 +1,7 @@
 # ============================================================
 # nuvei_webhook.py — Receptor de Webhooks Nuvei (Ecuador)
 # PITIUPI v6.2 — ✅ CORREGIDO: Async + Validación Rigurosa + Manejo de Errores
+# VERSIÓN CORREGIDA: Sin ON CONFLICT, con idempotencia mejorada
 # ============================================================
 
 from fastapi import APIRouter, Request, HTTPException
@@ -191,7 +192,7 @@ async def nuvei_callback(request: Request):
         if HAS_DB:
             with db_session() as session:
                 try:
-                    # ✅ A. IDEMPOTENCIA: Verificar si ya fue procesado
+                    # ✅ A. IDEMPOTENCIA MEJORADA: Verificar si ya fue procesado
                     existing_intent = session.execute(
                         text("""
                             SELECT id, status, amount_received 
@@ -219,10 +220,16 @@ async def nuvei_callback(request: Request):
                                     UPDATE payment_intents 
                                     SET status = 'COMPLETED', 
                                         amount_received = :amount,
-                                        updated_at = NOW()
+                                        updated_at = NOW(),
+                                        completed_at = NOW(),
+                                        webhook_payload = :webhook_payload
                                     WHERE provider_order_id = :order_id
                                 """),
-                                {"amount": amount, "order_id": transaction_id}
+                                {
+                                    "amount": amount, 
+                                    "order_id": transaction_id,
+                                    "webhook_payload": json.dumps(payload)
+                                }
                             )
                             session.commit()
                             logger.info(f"✅ Pago actualizado a COMPLETADO: {transaction_id}")
@@ -237,6 +244,30 @@ async def nuvei_callback(request: Request):
                                     f"🆔 Transacción: <code>{transaction_id[:16]}</code>"
                                 )
                             return {"status": "OK", "message": "updated_from_pending"}
+                        
+                        # Si existe pero es FAILED/EXPIRED, actualizar a COMPLETED
+                        if current_status in ["FAILED", "EXPIRED"]:
+                            logger.info(f"🔄 Reactivando pago {current_status}: {transaction_id}")
+                            session.execute(
+                                text("""
+                                    UPDATE payment_intents 
+                                    SET status = 'COMPLETED', 
+                                        amount_received = :amount,
+                                        updated_at = NOW(),
+                                        completed_at = NOW(),
+                                        failure_reason = NULL,
+                                        webhook_payload = :webhook_payload
+                                    WHERE provider_order_id = :order_id
+                                """),
+                                {
+                                    "amount": amount, 
+                                    "order_id": transaction_id,
+                                    "webhook_payload": json.dumps(payload)
+                                }
+                            )
+                            session.commit()
+                            logger.info(f"✅ Pago reactivado a COMPLETADO: {transaction_id}")
+                            return {"status": "OK", "message": "reactivated"}
                     
                     # B. Buscar usuario
                     user = get_user_by_telegram_id(session, telegram_id)
@@ -250,7 +281,7 @@ async def nuvei_callback(request: Request):
                     stmt = select(User).where(User.id == user.id).with_for_update()
                     user_locked = session.execute(stmt).scalar_one()
 
-                    # D. ✅ INSERTAR/ACTUALIZAR PaymentIntent CORRECTAMENTE
+                    # D. ✅ INSERTAR PaymentIntent SIN ON CONFLICT
                     session.execute(
                         text("""
                             INSERT INTO payment_intents (
@@ -278,12 +309,6 @@ async def nuvei_callback(request: Request):
                                 NOW(),
                                 :webhook_payload
                             )
-                            ON CONFLICT (provider_order_id) DO UPDATE SET 
-                                status = EXCLUDED.status,
-                                amount_received = EXCLUDED.amount_received,
-                                updated_at = NOW(),
-                                completed_at = NOW(),
-                                webhook_payload = EXCLUDED.webhook_payload;
                         """),
                         {
                             "user_id": user_locked.id,
@@ -309,10 +334,15 @@ async def nuvei_callback(request: Request):
                     # E. ✅ ACTUALIZAR BALANCES DEL USUARIO
                     logger.info(f"💰 Actualizando balances para usuario {user_locked.id}")
                     
-                    # Actualizar balance_recharge (separado para cumplir AML)
-                    new_balance_recharge = (user_locked.balance_recharge or 0) + Decimal(str(amount))
-                    new_balance_total = (user_locked.balance_total or 0) + Decimal(str(amount))
-                    new_total_deposits = (user_locked.total_deposits or 0) + Decimal(str(amount))
+                    # Verificar campos correctos en el modelo User
+                    balance_recharge = user_locked.balance_recharge or Decimal("0.00")
+                    balance_total = user_locked.balance_total or Decimal("0.00")
+                    total_deposits = user_locked.total_deposits or Decimal("0.00")
+                    
+                    # Actualizar balances
+                    new_balance_recharge = balance_recharge + Decimal(str(amount))
+                    new_balance_total = balance_total + Decimal(str(amount))
+                    new_total_deposits = total_deposits + Decimal(str(amount))
                     
                     session.execute(
                         text("""
@@ -332,11 +362,12 @@ async def nuvei_callback(request: Request):
                     )
 
                     # F. ✅ MARCAR PRIMER DEPÓSITO SI APLICA
-                    if not user_locked.first_deposit_completed:
+                    # Verificar el nombre correcto del campo en el modelo User
+                    if not getattr(user_locked, 'first_deposit_made', False):
                         session.execute(
                             text("""
                                 UPDATE users 
-                                SET first_deposit_completed = TRUE,
+                                SET first_deposit_made = TRUE,
                                     first_deposit_amount = :amount,
                                     first_deposit_date = NOW(),
                                     registration_completed = TRUE,
@@ -375,7 +406,7 @@ async def nuvei_callback(request: Request):
                     session.rollback()
                     logger.error(f"❌ Error procesando transacción {transaction_id}: {e}", exc_info=True)
                     # Re-lanzar para que Nuvei reintente
-                    raise
+                    raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)[:100]}")
 
         # 8. ✅ MODO STATELESS (sin DB)
         elif BOT_BACKEND_URL:
@@ -459,4 +490,3 @@ def health():
             "signature_validation": bool(APP_KEY)
         }
     }
-
