@@ -137,15 +137,15 @@ class User(Base, TimestampMixin):
     # Relaciones (Ajustadas para V6 - Lazy Loading)
     # --------------------------------------------------------
     
-    # ✅ Relación con WithdrawalRequests (V6.1 AML)
-    withdrawal_requests = relationship(
-        "WithdrawalRequest",
-        foreign_keys="[WithdrawalRequest.user_id]", 
-        back_populates="user",
-        cascade="save-update, merge",
-        lazy="dynamic",
-        order_by="WithdrawalRequest.created_at.desc()"
-    )
+#    # ✅ Relación con WithdrawalRequests (V6.1 AML)
+#    withdrawal_requests = relationship(
+#        "WithdrawalRequest",
+#        foreign_keys="[WithdrawalRequest.user_id]", 
+#        back_populates="user",
+#        cascade="save-update, merge",
+#        lazy="dynamic",
+#        order_by="WithdrawalRequest.created_at.desc()"
+#    )
     
     transactions = relationship(
         "Transaction",
