@@ -244,7 +244,7 @@ async def nuvei_callback(request: Request):
                         logger.error(f"❌ Usuario no encontrado: telegram_id={telegram_id}")
                         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-                    logger.info(f"👤 Usuario encontrado: {user.full_name}, ID={user.id}")
+                    logger.info(f"👤 Usuario encontrado: {user.full_legal_name}, ID={user.id}")
 
                     # C. Bloquear fila del usuario para actualización segura
                     stmt = select(User).where(User.id == user.id).with_for_update()
@@ -459,3 +459,4 @@ def health():
             "signature_validation": bool(APP_KEY)
         }
     }
+
