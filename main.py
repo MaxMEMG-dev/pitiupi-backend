@@ -41,10 +41,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-```
 
-### Instrucciones para Desplegar en Render
-
-1.  Actualiza tu archivo `requirements.txt` agregando:
-    ```text
-    stripe
