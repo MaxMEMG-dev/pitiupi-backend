@@ -51,7 +51,7 @@ def send_telegram_notification(chat_id: int, text_msg: str):
 # --- WEBHOOK ---
 
 @router.post("/callback")
-async def stripe_callback(request: Request, stripe_signature: str = Header(None)):
+async def stripe_callback(request: Request, stripe_signature: str = Header(None, alias="Stripe-Signature")):
     """
     Procesa eventos 'checkout.session.completed' de Stripe.
     Mantiene la misma robustez (Idempotencia + AML) que el webhook de Nuvei.
@@ -230,4 +230,5 @@ async def stripe_callback(request: Request, stripe_signature: str = Header(None)
         # Modo Stateless (sin DB local, enviar a Bot Backend si existe)
         logger.warning("⚠️ Modo Stateless no implementado completamente para Stripe")
         return {"status": "ok", "mode": "stateless_ignored"}
+
 
