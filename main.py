@@ -62,7 +62,9 @@ if users_router:
     app.include_router(users_router, prefix="/users", tags=["Users"])
     logger.info("✅ Ruta /users registrada")
 
+# Root endpoint - Acepta GET y HEAD
 @app.get("/")
+@app.head("/")
 def root():
     return {
         "service": "PITIUPI Backend Stripe", 
@@ -71,6 +73,7 @@ def root():
     }
 
 @app.get("/health")
+@app.head("/health")
 def health():
     """Health check endpoint"""
     return {"status": "healthy"}
