@@ -1,6 +1,6 @@
 # ============================================================
 # stripe_webhook.py — Receptor de Webhooks Stripe
-# PITIUPI v6.5 — Adaptación de lógica Nuvei a Stripe
+# PITIUPI v6.6 — Con debugging mejorado
 # ============================================================
 
 import stripe
@@ -69,7 +69,6 @@ async def stripe_callback(
     Mantiene idempotencia y lógica AML.
     """
     
-    # Log de debugging
     logger.info("📨 Webhook recibido de Stripe")
     
     payload = await request.body()
@@ -103,16 +102,29 @@ async def stripe_callback(
 
     session = event['data']['object']
     
-    # 3. EXTRACCIÓN DE DATOS
+    # 3. EXTRACCIÓN DE DATOS CON DEBUGGING
     transaction_id = session.get('id')
     payment_intent_id = session.get('payment_intent')
     amount_cents = session.get('amount_total', 0)
     amount_dollars = Decimal(amount_cents) / 100
     currency = session.get('currency', 'usd').upper()
     
-    # Metadata crítica
+    # Metadata crítica - CON DEBUGGING
     metadata = session.get('metadata', {})
-    user_id_param = metadata.get('user_id') or session.get('client_reference_id')
+    client_reference_id = session.get('client_reference_id')
+    
+    # DEBUGGING: Mostrar TODO lo que llega
+    logger.info(f"🔍 DEBUG - Metadata recibida: {json.dumps(metadata)}")
+    logger.info(f"🔍 DEBUG - client_reference_id: {client_reference_id}")
+    
+    # Intentar obtener user_id de múltiples fuentes
+    user_id_param = None
+    if metadata and 'user_id' in metadata:
+        user_id_param = metadata['user_id']
+        logger.info(f"✅ user_id encontrado en metadata: {user_id_param}")
+    elif client_reference_id:
+        user_id_param = client_reference_id
+        logger.info(f"✅ user_id encontrado en client_reference_id: {user_id_param}")
     
     logger.info(
         f"📥 Stripe Payment: {transaction_id} | "
@@ -120,7 +132,8 @@ async def stripe_callback(
     )
 
     if not user_id_param:
-        logger.error("❌ Webhook recibido sin User ID en metadata")
+        logger.error("❌ Webhook recibido sin User ID en metadata ni client_reference_id")
+        logger.error(f"❌ Session completa: {json.dumps(session, indent=2)}")
         return {"status": "error", "message": "missing_user_metadata"}
 
     # 4. PROCESAMIENTO EN BASE DE DATOS
@@ -155,8 +168,10 @@ async def stripe_callback(
                     pass
             
             if not user:
-                logger.error(f"❌ Usuario no encontrado: {user_id_param}")
+                logger.error(f"❌ Usuario no encontrado en DB: {user_id_param}")
                 return {"status": "error", "message": "user_not_found"}
+
+            logger.info(f"✅ Usuario encontrado: ID={user.id}, Telegram={user.telegram_id}")
 
             # Bloqueo de fila
             stmt = select(User).where(User.id == user.id).with_for_update()
@@ -204,10 +219,11 @@ async def stripe_callback(
                 )
 
             # D. ACTUALIZAR SALDOS
-            # Usar balance_available en lugar de balance_recharge si es lo que usa tu bot
             new_available = (user_locked.balance_available or Decimal(0)) + amount_dollars
             new_total = (user_locked.balance_total or Decimal(0)) + amount_dollars
             new_deposits = (user_locked.total_deposits or Decimal(0)) + amount_dollars
+
+            logger.info(f"💰 Actualizando saldos: available ${new_available}, total ${new_total}")
 
             db.execute(
                 text("""
@@ -243,7 +259,7 @@ async def stripe_callback(
             db.commit()
             logger.info(
                 f"✅ Saldo acreditado a usuario {user_locked.id} "
-                f"(Telegram: {user_locked.telegram_id}). Nuevo total: ${new_total}"
+                f"(Telegram: {user_locked.telegram_id}). Nuevo disponible: ${new_available}, Total: ${new_total}"
             )
 
             # F. NOTIFICACIÓN
